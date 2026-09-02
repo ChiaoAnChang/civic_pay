@@ -198,14 +198,3 @@ class AuditLedger:
             df = pd.DataFrame(rows)
             self.store.write_dataframe(M.AuditEvent.TABLE, df, mode="append")
         return pd.DataFrame(rows) if rows else pd.DataFrame()
-
-        events = events.sort_values(["timestamp", "event_id"]).reset_index(drop=True)
-        prev_hash = ""
-        for _, row in events.iterrows():
-            body = event_body_from_row(row.to_dict())
-            if compute_event_hash(body) != row["event_hash"]:
-                return False
-            if row["previous_hash"] != prev_hash:
-                return False
-            prev_hash = row["event_hash"]
-        return True

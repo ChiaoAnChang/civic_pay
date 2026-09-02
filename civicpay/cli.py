@@ -271,5 +271,49 @@ def exception_resolve(
     )
 
 
+audit_app = typer.Typer(name="audit", help="Audit-evidence layer.", no_args_is_help=True)
+app.add_typer(audit_app)
+
+
+@audit_app.command("verify")
+def audit_verify(
+    batch: str = typer.Option(None, help="Recon batch id to verify (omitted = full chain)."),
+    db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
+) -> None:
+    """Verify the audit-event hash chain is intact."""
+    from civicpay.audit.evidence import verify_chain
+
+    store = DuckDBStore(db_path)
+    report = verify_chain(store, batch_id=batch)
+    store.close()
+    status = "[green]VERIFIED[/]" if report["verified"] else "[red]BROKEN[/]"
+    console.print(f"Audit chain: {status} — {report['event_count']} event(s) checked.")
+    if not report["verified"]:
+        b = report["broken_event"]
+        console.print(
+            f"  [red]Broken at[/] {b['event_id']} — {b['reason']} (position {b['position']})"
+        )
+
+
+@audit_app.command("export")
+def audit_export(
+    batch: str = typer.Option(..., help="Recon batch id to export."),
+    out: str = typer.Option("evidence.json", help="Output JSON path."),
+    db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
+) -> None:
+    """Export the tamper-evident evidence package as structured JSON."""
+    from civicpay.audit.evidence import export_evidence
+
+    store = DuckDBStore(db_path)
+    pkg = export_evidence(store, batch_id=batch, out_path=out)
+    store.close()
+    v = pkg["verification"]
+    console.print(
+        f"[green]Exported.[/] {out} — batch {batch}: "
+        f"{v['event_count']} audit events, verification={'verified' if v['verified'] else 'broken'}, "
+        f"recon summary={pkg['reconciliation_summary']}"
+    )
+
+
 if __name__ == "__main__":
     app()
