@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Re-run idempotency pre-flight guard** (OPEN_QUESTIONS §C): both pipelines
+  (`QualityPipeline`, `ReconciliationPipeline`) now check whether a `batch_id`
+  is already present in the append-only audit log before any writes, and fail
+  fast with `BatchIdAlreadyUsedError` (a clear, actionable message) instead of
+  a raw DuckDB primary-key constraint error mid-run. `civicpay run-all` checks
+  both derived batch ids (`{run_id}-RECON`, `{run_id}-DQ`) up front.
 - Trusted Publishing (OIDC) for PyPI: releases are published via GitHub Actions
   identity, no shared API token secret required.
 - Version is now derived from git tags via `hatch-vcs` (`dynamic = ["version"]`).

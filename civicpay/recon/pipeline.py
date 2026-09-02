@@ -15,6 +15,7 @@ from typing import Any
 
 import pandas as pd
 import yaml
+from civicpay.audit.evidence import BatchIdAlreadyUsedError, batch_id_in_use
 from civicpay.audit.ledger import AuditLedger
 from civicpay.data import models as M
 from civicpay.data.synthetic import AS_OF_DATETIME
@@ -70,6 +71,12 @@ class ReconciliationPipeline:
         """Run reconciliation and persist results + audit events. Returns summary."""
         store = self.store
         store.init_schema()
+
+        # Pre-flight: the audit log is append-only, so re-running the same
+        # batch_id collides on event_id primary keys. Fail fast with a clear
+        # message instead of a raw DuckDB constraint error.
+        if batch_id_in_use(store, batch_id):
+            raise BatchIdAlreadyUsedError(batch_id)
 
         payments = store.read_table(M.PaymentRecord.TABLE)
         transactions = store.read_table(M.Transaction.TABLE)

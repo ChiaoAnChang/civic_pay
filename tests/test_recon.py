@@ -333,3 +333,36 @@ def test_cli_recon_run_writes_results(tmp_path):
     store.close()
     assert count == EXPECTED["reconciliation_results_rows"]
     assert audit == EXPECTED["audit_events"]
+
+
+# --------------------------------------------------------------------------- #
+# Re-run idempotency pre-flight guard (OPEN_QUESTIONS §C)
+# --------------------------------------------------------------------------- #
+
+
+def test_recon_re_run_same_batch_id_blocked(seeded_store):
+    """Re-running recon with a batch_id already in the audit log must fail
+    fast with BatchIdAlreadyUsedError (not a raw DuckDB PK constraint error)."""
+    from civicpay.audit.evidence import BatchIdAlreadyUsedError
+
+    pipeline = ReconciliationPipeline(store=seeded_store)
+    pipeline.run(batch_id="RECON-RERUN")  # first run: succeeds
+
+    with pytest.raises(BatchIdAlreadyUsedError) as exc:
+        pipeline.run(batch_id="RECON-RERUN")  # second run: blocked
+    assert "RECON-RERUN" in str(exc.value)
+    assert "--batch-id" in str(exc.value)
+
+
+def test_cli_recon_re_run_blocked_message(tmp_path):
+    """The CLI surfaces the pre-flight failure with a clear message + exit 1."""
+    db_path = tmp_path / "rerun.duckdb"
+    runner = CliRunner()
+    runner.invoke(app, ["seed", "--db-path", str(db_path)])
+    runner.invoke(app, ["recon", "run", "--db-path", str(db_path), "--batch-id", "CLI-DUP"])
+    result = runner.invoke(
+        app, ["recon", "run", "--db-path", str(db_path), "--batch-id", "CLI-DUP"]
+    )
+    assert result.exit_code == 1
+    assert "CLI-DUP" in result.output
+    assert "--batch-id" in result.output

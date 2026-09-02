@@ -24,6 +24,38 @@ from civicpay.data import models as M
 from civicpay.storage.duckdb import DuckDBStore
 
 
+def batch_id_in_use(store: DuckDBStore, batch_id: str) -> bool:
+    """Return True if any audit event already exists for this batch_id.
+
+    The audit log is append-only and tamper-evident, so re-running a pipeline
+    with the same ``batch_id`` collides on ``event_id`` primary keys (a raw
+    DuckDB constraint error). This pre-flight check lets pipelines fail fast
+    with a clear, actionable message instead — and lets ``run-all`` detect
+    collisions before any partial writes happen.
+    """
+    return not _rows_for_batch(store, batch_id).empty
+
+
+class BatchIdAlreadyUsedError(ValueError):
+    """Raised when a pipeline batch_id already exists in the append-only audit log.
+
+    Carries a clear, actionable message (rather than letting DuckDB raise a raw
+    primary-key constraint error deep in the write path) telling the caller to
+    use a fresh batch_id. There is intentionally no --force escape hatch: the
+    audit log is append-only and tamper-evident, so re-running the same
+    batch_id cannot produce a clean result — the guard fails fast instead.
+    """
+
+    def __init__(self, batch_id: str) -> None:
+        self.batch_id = batch_id
+        super().__init__(
+            f"Batch id '{batch_id}' already has audit events in the log. "
+            f"The audit log is append-only (tamper-evident), so re-running with "
+            f"the same batch_id collides on primary keys. Use a fresh "
+            f"--batch-id (or --run-id for 'civicpay run-all') for each run."
+        )
+
+
 def _rows_for_batch(store: DuckDBStore, batch_id: str | None) -> pd.DataFrame:
     """Read audit events; optionally filtered to one batch by event_id prefix."""
     df = store.read_table(M.AuditEvent.TABLE)

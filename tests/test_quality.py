@@ -507,3 +507,52 @@ def test_cli_dq_check_runs(tmp_path):
     result = runner.invoke(app, ["dq", "check", "--db-path", str(db), "--batch-id", "DQ-CLI"])
     assert result.exit_code == 0, result.output
     assert "DQ-CLI" in result.output
+
+
+# --------------------------------------------------------------------------- #
+# Re-run idempotency pre-flight guard (OPEN_QUESTIONS §C)
+# --------------------------------------------------------------------------- #
+
+
+def test_dq_re_run_same_batch_id_blocked(synthetic_store):
+    """Re-running DQ with a batch_id already in the audit log must fail fast
+    with BatchIdAlreadyUsedError (not a raw DuckDB PK constraint error)."""
+    from civicpay.audit.evidence import BatchIdAlreadyUsedError
+
+    pipe = QualityPipeline(store=synthetic_store, config=load_config())
+    pipe.run(batch_id="DQ-RERUN")  # first run: succeeds, writes audit events
+
+    with pytest.raises(BatchIdAlreadyUsedError) as exc:
+        pipe.run(batch_id="DQ-RERUN")  # second run: same batch_id -> blocked
+    assert "DQ-RERUN" in str(exc.value)
+    assert "append-only" in str(exc.value)
+    assert "--batch-id" in str(exc.value)
+
+
+def test_dq_pre_flight_uses_batch_id_prefix_not_substring(synthetic_store):
+    """The dash-delimited prefix must not false-positive: 'DQ-0010' first must
+    NOT block a later 'DQ-001' (nor vice versa)."""
+    pipe = QualityPipeline(store=synthetic_store, config=load_config())
+    pipe.run(batch_id="DQ-0010")  # creates EVT-DQ-0010-* events
+    summary = pipe.run(batch_id="DQ-001")  # distinct prefix -> must succeed
+    assert summary["batch_id"] == "DQ-001"
+
+
+def test_cli_dq_re_run_blocked_message(tmp_path):
+    """The CLI surfaces the pre-flight failure as a readable message + exit 1."""
+    from civicpay.cli import app
+    from typer.testing import CliRunner
+
+    db = tmp_path / "rerun.duckdb"
+    store = DuckDBStore(str(db))
+    store.init_schema()
+    data = generate_all(seed=42, volumes={"customers": 50, "accounts": 50, "transactions": 200})
+    store.write_many(data, mode="replace")
+    store.close()
+
+    runner = CliRunner()
+    runner.invoke(app, ["dq", "check", "--db-path", str(db), "--batch-id", "DQ-DUP"])
+    result = runner.invoke(app, ["dq", "check", "--db-path", str(db), "--batch-id", "DQ-DUP"])
+    assert result.exit_code == 1
+    assert "DQ-DUP" in result.output
+    assert "--batch-id" in result.output

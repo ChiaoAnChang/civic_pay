@@ -13,7 +13,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from civicpay.audit.evidence import verify_chain
+from civicpay.audit.evidence import BatchIdAlreadyUsedError, verify_chain
 from civicpay.data import models as M
 from civicpay.data.synthetic import AS_OF_DATE, generate_all
 from civicpay.exceptions.queue import ExceptionManager
@@ -139,13 +139,17 @@ def recon_run(
         store.write_dataframe(M.PaymentRecord.TABLE, df, mode="replace")
         console.print(f"  ingested {len(df):,} payment records from {file}")
         store.close()
-    summary = run_recon(
-        db_path=db_path,
-        config_path=config,
-        batch_id=batch_id,
-        file_id=file_id,
-        as_of=as_of,
-    )
+    try:
+        summary = run_recon(
+            db_path=db_path,
+            config_path=config,
+            batch_id=batch_id,
+            file_id=file_id,
+            as_of=as_of,
+        )
+    except BatchIdAlreadyUsedError as e:
+        console.print(f"[red]Pre-flight check failed:[/] {e}")
+        raise typer.Exit(code=1) from e
     console.print(f"[green]Done.[/] Reconciliation batch {summary['batch_id']}")
 
 
@@ -179,13 +183,17 @@ def dq_check(
         if date
         else AS_OF_DATETIME
     )
-    summary = run_dq(
-        db_path=db_path,
-        config_path=config,
-        batch_id=batch_id,
-        dataset=dataset,
-        as_of=as_of,
-    )
+    try:
+        summary = run_dq(
+            db_path=db_path,
+            config_path=config,
+            batch_id=batch_id,
+            dataset=dataset,
+            as_of=as_of,
+        )
+    except BatchIdAlreadyUsedError as e:
+        console.print(f"[red]Pre-flight check failed:[/] {e}")
+        raise typer.Exit(code=1) from e
     scores = summary["per_dataset_scores"]
     score_str = ", ".join(f"{k}={v:.2f}" for k, v in scores.items())
     console.print(f"[green]Done.[/] DQ batch {summary['batch_id']} — {score_str}")
@@ -345,10 +353,20 @@ def run_all(
 
     store = DuckDBStore(db_path)
     try:
+        # 0. Pre-flight: both derived batch ids must be unused, otherwise the
+        # append-only audit log would collide on primary keys mid-run (after
+        # seed/recon have already written). Check before any writes happen.
+        from civicpay.audit.evidence import batch_id_in_use
+
+        store.init_schema()
+        for derived in (f"{run_id}-RECON", f"{run_id}-DQ"):
+            if batch_id_in_use(store, derived):
+                raise BatchIdAlreadyUsedError(derived)
+        stages.append(("pre-flight", "ok", f"batch ids {run_id}-RECON/{run_id}-DQ unused"))
+
         # 1. Seed.
         if seed:
             data = generate_all(seed=42)
-            store.init_schema()
             for table in [
                 M.Customer.TABLE,
                 M.Account.TABLE,
@@ -405,6 +423,9 @@ def run_all(
                 f"{report['event_count']} events",
             )
         )
+    except BatchIdAlreadyUsedError as e:
+        console.print(f"[red]Pre-flight check failed:[/] {e}")
+        stages.append(("pre-flight", "BLOCKED", f"batch_id '{e.batch_id}' already in audit log"))
     finally:
         store.close()
 

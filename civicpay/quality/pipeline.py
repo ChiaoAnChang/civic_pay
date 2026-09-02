@@ -27,6 +27,7 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
+from civicpay.audit.evidence import BatchIdAlreadyUsedError, batch_id_in_use
 from civicpay.audit.ledger import AuditLedger
 from civicpay.data import models as M
 from civicpay.data.synthetic import AS_OF_DATETIME
@@ -93,6 +94,12 @@ class QualityPipeline:
         """Run configured DQ checks and persist results + audit events."""
         store = self.store
         store.init_schema()
+
+        # Pre-flight: the audit log is append-only, so re-running the same
+        # batch_id collides on event_id / exception_id primary keys. Fail fast
+        # with a clear message instead of a raw DuckDB constraint error.
+        if batch_id_in_use(store, batch_id):
+            raise BatchIdAlreadyUsedError(batch_id)
 
         datasets = self.config.datasets
         if dataset is not None:

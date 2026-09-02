@@ -191,3 +191,21 @@ def test_cli_run_all_end_to_end(tmp_path):
     assert store.table_count(M.DQResult.TABLE) > 0
     assert store.table_count(M.AuditEvent.TABLE) > 0
     store.close()
+
+
+def test_cli_run_all_re_run_blocked(tmp_path):
+    """Re-running `civicpay run-all` with the same --run-id is blocked pre-flight
+    (before seed/recon write anything), exits 1, and surfaces a BLOCKED row."""
+    from civicpay.cli import app as cli_app
+    from typer.testing import CliRunner
+
+    db = tmp_path / "rerun-all.duckdb"
+    runner = CliRunner()
+    first = runner.invoke(cli_app, ["run-all", "--db-path", str(db), "--run-id", "DUP"])
+    assert first.exit_code == 0, first.output
+
+    second = runner.invoke(cli_app, ["run-all", "--db-path", str(db), "--run-id", "DUP"])
+    assert second.exit_code == 1
+    assert "DUP-RECON" in second.output or "DUP-DQ" in second.output
+    assert "BLOCKED" in second.output
+    assert "--run-id" in second.output
