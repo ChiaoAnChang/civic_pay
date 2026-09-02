@@ -165,3 +165,29 @@ def test_cli_dashboard_command_registered(monkeypatch):
     monkeypatch.setattr(app_module, "run_streamlit_app", lambda target=None: 0)
     result = runner.invoke(cli_app, ["dashboard"])
     assert result.exit_code == 0
+
+
+def test_cli_run_all_end_to_end(tmp_path):
+    """`civicpay run-all` runs every stage and the audit chain verifies."""
+    from civicpay.cli import app as cli_app
+    from typer.testing import CliRunner
+
+    db = tmp_path / "e2e.duckdb"
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["run-all", "--db-path", str(db)])
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "seed" in out and "ok" in out
+    assert "reconcile" in out
+    assert "data-quality" in out
+    assert "exception-list" in out
+    assert "audit-verify" in out and "verified" in out
+    # The DB now contains artifacts from every stage.
+    from civicpay.data import models as M
+    from civicpay.storage.duckdb import DuckDBStore
+
+    store = DuckDBStore(str(db))
+    assert store.table_count(M.ReconciliationResult.TABLE) > 0
+    assert store.table_count(M.DQResult.TABLE) > 0
+    assert store.table_count(M.AuditEvent.TABLE) > 0
+    store.close()

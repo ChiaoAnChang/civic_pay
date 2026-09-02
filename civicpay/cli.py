@@ -13,6 +13,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from civicpay.audit.evidence import verify_chain
 from civicpay.data import models as M
 from civicpay.data.synthetic import AS_OF_DATE, generate_all
 from civicpay.exceptions.queue import ExceptionManager
@@ -313,6 +314,101 @@ def audit_export(
         f"{v['event_count']} audit events, verification={'verified' if v['verified'] else 'broken'}, "
         f"recon summary={pkg['reconciliation_summary']}"
     )
+
+
+@app.command("run-all")
+def run_all(
+    db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
+    seed: bool = typer.Option(True, help="Seed synthetic data first (use --no-seed to skip)."),
+    date: str = typer.Option(str(AS_OF_DATE), help="As-of date (YYYY-MM-DD)."),
+) -> None:
+    """End-to-end: seed -> reconcile -> DQ -> exception list -> audit verify."""
+    from datetime import datetime
+
+    from civicpay.data.synthetic import AS_OF_DATETIME
+
+    as_of = (
+        datetime.fromisoformat(date).replace(tzinfo=AS_OF_DATETIME.tzinfo)
+        if date
+        else AS_OF_DATETIME
+    )
+    stages: list[tuple[str, str, str]] = []  # (stage, status, detail)
+
+    store = DuckDBStore(db_path)
+    try:
+        # 1. Seed.
+        if seed:
+            data = generate_all(seed=42)
+            store.init_schema()
+            for table in [
+                M.Customer.TABLE,
+                M.Account.TABLE,
+                M.Transaction.TABLE,
+                M.PaymentFile.TABLE,
+                M.PaymentRecord.TABLE,
+            ]:
+                store.write_dataframe(table, data[table], mode="replace")
+            stages.append(("seed", "ok", f"{sum(len(data[t]) for t in data)} rows"))
+        else:
+            stages.append(("seed", "skipped", "--no-seed"))
+
+        # 2. Reconcile.
+        recon = run_recon(db_path=db_path, batch_id="RUNALL-RECON", as_of=as_of)
+        stages.append(
+            (
+                "reconcile",
+                "ok",
+                f"rate={recon['reconciliation_rate']}% matched={recon['matched_total']} exceptions={recon['exception_total']}",
+            )
+        )
+
+        # 3. Data quality.
+        dq = run_dq(db_path=db_path, batch_id="RUNALL-DQ", as_of=as_of)
+        scores = dq["per_dataset_scores"]
+        stages.append(
+            (
+                "data-quality",
+                "ok",
+                f"{dq['checks_passed']}/{dq['checks_run']} checks pass, "
+                + ", ".join(f"{k}={v:.2f}" for k, v in scores.items()),
+            )
+        )
+
+        # 4. Exception queue.
+        items = ExceptionManager(store=store, as_of=as_of).list()
+        if items:
+            stages.append(
+                (
+                    "exception-list",
+                    "ok",
+                    f"{len(items)} item(s), top priority={items[0]['priority_score']:.2f}",
+                )
+            )
+        else:
+            stages.append(("exception-list", "ok", "0 items"))
+
+        # 5. Audit verify.
+        report = verify_chain(store)
+        stages.append(
+            (
+                "audit-verify",
+                "verified" if report["verified"] else "BROKEN",
+                f"{report['event_count']} events",
+            )
+        )
+    finally:
+        store.close()
+
+    table = Table(title="End-to-End Run")
+    table.add_column("stage", style="bold")
+    table.add_column("status")
+    table.add_column("detail")
+    for stage, status, detail in stages:
+        style = "green" if status in ("ok", "verified", "skipped") else "red"
+        table.add_row(stage, f"[{style}]{status}[/]", detail)
+    console.print(table)
+    if stages[-1][1] != "verified":
+        raise typer.Exit(code=1)
 
 
 @app.command("dashboard")

@@ -36,36 +36,68 @@ def _rows_for_batch(store: DuckDBStore, batch_id: str | None) -> pd.DataFrame:
 def verify_chain(store: DuckDBStore, batch_id: str | None = None) -> dict[str, Any]:
     """Verify the integrity of the audit-event hash chain.
 
-    Returns a report with ``verified`` (bool), ``event_count``, and a
+    The chain is a linked list: each event's ``previous_hash`` is the
+    ``event_hash`` of its predecessor. We walk that chain (rather than sorting by
+    timestamp, which is unreliable when events share a timestamp across batches)
+    and confirm: (1) there is a single genesis event, (2) every event is reached
+    exactly once, and (3) every stored ``event_hash`` matches a recomputation of
+    its content. Returns ``verified`` (bool), ``event_count``, and a
     ``broken_event`` dict (``event_id`` + ``reason``) if the chain is broken.
     """
     df = _rows_for_batch(store, batch_id)
+    events = [r.to_dict() for _, r in df.iterrows()]
+    if not events:
+        return {"verified": True, "event_count": 0, "batch_id": batch_id, "broken_event": None}
+
+    hashes = {e["event_hash"] for e in events}
+    # successor map: previous_hash -> events that claim to follow it
+    successor: dict[str, list[dict]] = {}
+    for e in events:
+        successor.setdefault(e["previous_hash"] or "", []).append(e)
+
+    # genesis: previous_hash empty, or pointing outside this event set (batch
+    # boundary — the first event of a filtered batch legitimately points at a
+    # prior batch's last event).
+    genesis = [
+        e
+        for e in events
+        if (e["previous_hash"] or "") == "" or (e["previous_hash"] or "") not in hashes
+    ]
+
     broken: dict[str, Any] | None = None
-    prev_hash = ""
-    # When verifying a single batch, the first event's previous_hash legitimately
-    # points at a prior batch's last event (a chain boundary), so we allow it.
-    allow_boundary = batch_id is not None
-
-    for i, (_, row) in enumerate(df.iterrows()):
-        r = row.to_dict()
-        body = {field: r[field] for field in HASHED_FIELDS}
-        recomputed = compute_event_hash(body)
-        content_ok = recomputed == r["event_hash"]
-
-        if i == 0 and allow_boundary:
-            link_ok = True  # boundary: previous_hash may point outside the batch
-        else:
-            link_ok = r["previous_hash"] == prev_hash
-
-        if broken is None and (not content_ok or not link_ok):
-            reason = "content_hash_mismatch" if not content_ok else "chain_linkage_broken"
-            broken = {"event_id": r["event_id"], "reason": reason, "position": i}
-
-        prev_hash = r["event_hash"]
+    if len(genesis) != 1:
+        reason = "no_genesis" if not genesis else "chain_linkage_broken"
+        broken = {
+            "event_id": genesis[0]["event_id"] if genesis else None,
+            "reason": reason,
+            "position": 0,
+        }
+    else:
+        seen: set[str] = set()
+        current = genesis[0]
+        while current is not None:
+            if current["event_id"] in seen:
+                broken = broken or {"event_id": current["event_id"], "reason": "cycle_detected"}
+                break
+            seen.add(current["event_id"])
+            body = {field: current[field] for field in HASHED_FIELDS}
+            if compute_event_hash(body) != current["event_hash"]:
+                broken = broken or {
+                    "event_id": current["event_id"],
+                    "reason": "content_hash_mismatch",
+                    "position": len(seen) - 1,
+                }
+            succs = successor.get(current["event_hash"], [])
+            if len(succs) > 1:
+                broken = broken or {"event_id": current["event_id"], "reason": "chain_fork"}
+                break
+            current = succs[0] if succs else None
+        if broken is None and len(seen) != len(events):
+            broken = {"event_id": None, "reason": "orphaned_events", "position": len(seen)}
 
     return {
         "verified": broken is None,
-        "event_count": int(len(df)),
+        "event_count": int(len(events)),
         "batch_id": batch_id,
         "broken_event": broken,
     }
