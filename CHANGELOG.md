@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Audit hash chain falsely reported as broken on any non-UTC machine.**
+  `AS_OF_DATETIME` (and other timestamps) are timezone-aware (`tzinfo=UTC`),
+  but every DuckDB `TIMESTAMP` column is timezone-naive. Writing a tz-aware
+  pandas/Python datetime into one silently converts it through the *local
+  system timezone* before dropping the tz (verified empirically: a UTC value
+  written on a UTC-5 machine came back 5 hours earlier) — so the value
+  persisted to `audit_event_log` differed from the value hashed at append
+  time, and `audit verify` / `civicpay run-all` reported the chain as
+  tampered with zero actual tampering, on any machine not set to UTC. Fixed
+  at the storage layer: `civicpay/storage/duckdb.py` now normalizes
+  timezone-aware datetimes to naive UTC before every write
+  (`DuckDBStore.write_dataframe` via a new `_naive_utc` helper) and before
+  every raw-SQL parameter bind (new `DuckDBStore.execute()`, now used by
+  `ExceptionManager.resolve/assign` and `AuditLedger._initialize_chain`
+  instead of reaching into `store.conn.execute()` directly). Found while
+  setting up a fresh local dev environment (Windows, UTC-5) to verify
+  OPEN_QUESTIONS §E — 10 of 11 test failures in that environment traced back
+  to this one root cause.
+
+### Changed
+- **Per-severity SLA windows for exception aging** (OPEN_QUESTIONS §F):
+  `SLA_DAYS_BY_SEVERITY = {"high": 3, "medium": 7, "low": 14}` replaces the
+  old flat 7-day default for every exception regardless of severity — a
+  high-severity item now starts escalating sooner than a low-severity one,
+  matching real SLA/triage practice. `--sla-days` (CLI) /
+  `sla_days=` (`ExceptionManager.list`, `dashboard.exception_queue`) still
+  works as an explicit override (applies the same window to every item);
+  the resolved window is now also exposed per-item as a new `sla_days`
+  field/column (CLI table, dashboard). Per-check-type SLA config remains
+  deferred to v0.2.
+- **Anomaly checks excluded from the dataset quality score** (OPEN_QUESTIONS
+  §E): `type_weights.anomaly` is now `0.0` (was `0.5`). A z-score/IQR anomaly
+  check flags a small tail of records by construction, so its own score sits
+  near 100 regardless of data quality elsewhere — including it in the average
+  inflated the dataset score rather than protecting against outliers
+  "dominating" it, and it was already excluded from exception routing
+  (`route_failures: false`), so the scoring weight was the last inconsistency.
+  The anomaly failure rate is now reported separately: `QualityPipeline.run()`
+  returns it as `per_dataset_anomaly_rate` in the summary (also printed in the
+  CLI table), and the dashboard's `dq_dataset_scores()` — previously an
+  unweighted flat mean that ignored `type_weights` entirely — now uses the
+  same type-weighted formula as the CLI plus an `anomaly_rate` column.
+
 ### Added
 - **Re-run idempotency pre-flight guard** (OPEN_QUESTIONS §C): both pipelines
   (`QualityPipeline`, `ReconciliationPipeline`) now check whether a `batch_id`

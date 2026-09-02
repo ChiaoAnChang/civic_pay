@@ -74,6 +74,7 @@ def render(store: DuckDBStore | None = None, as_of=None) -> None:  # noqa: ANN00
                     "priority",
                     "status",
                     "age_days",
+                    "sla_days",
                     "amount_at_risk",
                     "priority_score",
                 ]

@@ -17,11 +17,11 @@ from civicpay.audit.ledger import AuditLedger
 from civicpay.data import models as M
 from civicpay.data.synthetic import AS_OF_DATETIME
 from civicpay.exceptions.workflow import (
-    DEFAULT_SLA_DAYS,
     age_days,
     age_factor,
     amount_at_risk_factor,
     compute_priority_score,
+    resolve_sla_days,
 )
 from civicpay.storage.duckdb import DuckDBStore
 
@@ -66,9 +66,14 @@ class ExceptionManager:
     def list(
         self,
         status: str | None = None,
-        sla_days: int = DEFAULT_SLA_DAYS,
+        sla_days: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Return exceptions with computed priority, sorted most-urgent first."""
+        """Return exceptions with computed priority, sorted most-urgent first.
+
+        ``sla_days=None`` (the default) resolves each item's SLA window from
+        its severity (see ``workflow.SLA_DAYS_BY_SEVERITY``); pass an explicit
+        value to use the same window for every item regardless of severity.
+        """
         df = self.store.read_table(M.ExceptionItem.TABLE)
         if status:
             df = df[df["status"] == status]
@@ -77,7 +82,8 @@ class ExceptionManager:
             ref = "" if pd.isna(r["reference_id"]) else str(r["reference_id"])
             amt = self._amount_at_risk(ref)
             age = age_days(r["created_at"], self.as_of)
-            score = compute_priority_score(r["priority"], amt, age, sla_days)
+            resolved_sla = resolve_sla_days(r["priority"], sla_days)
+            score = compute_priority_score(r["priority"], amt, age, resolved_sla)
             rows.append(
                 {
                     "exception_id": r["exception_id"],
@@ -87,9 +93,10 @@ class ExceptionManager:
                     "status": r["status"],
                     "assigned_to": None if pd.isna(r["assigned_to"]) else r["assigned_to"],
                     "age_days": age,
+                    "sla_days": resolved_sla,
                     "amount_at_risk": round(amt, 2),
                     "amount_at_risk_factor": amount_at_risk_factor(amt),
-                    "age_factor": age_factor(age, sla_days),
+                    "age_factor": age_factor(age, resolved_sla),
                     "priority_score": score,
                     "created_at": r["created_at"],
                 }

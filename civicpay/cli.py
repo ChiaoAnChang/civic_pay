@@ -206,7 +206,11 @@ app.add_typer(exc_app)
 @exc_app.command("list")
 def exception_list(
     status: str = typer.Option(None, help="Filter by status: open|in_progress|resolved."),
-    sla_days: int = typer.Option(7, help="SLA threshold in days."),
+    sla_days: int = typer.Option(
+        None,
+        help="SLA threshold in days. Default: resolved per severity "
+        "(high=3, medium=7, low=14); pass a value to override for every item.",
+    ),
     db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
     date: str = typer.Option(str(AS_OF_DATE), help="As-of date (YYYY-MM-DD) for aging."),
 ) -> None:
@@ -224,19 +228,18 @@ def exception_list(
     items = ExceptionManager(store=store, as_of=as_of).list(status=status, sla_days=sla_days)
     store.close()
     table = Table(title=f"Exception Queue — {len(items)} item(s)")
+    right_aligned = ("age_days", "sla_days", "amount_at_risk", "priority_score")
     for col in (
         "exception_id",
         "source",
         "priority",
         "status",
         "age_days",
+        "sla_days",
         "amount_at_risk",
         "priority_score",
     ):
-        table.add_column(
-            col,
-            justify="right" if col in ("age_days", "amount_at_risk", "priority_score") else "left",
-        )
+        table.add_column(col, justify="right" if col in right_aligned else "left")
     for it in items:
         table.add_row(
             it["exception_id"],
@@ -244,6 +247,7 @@ def exception_list(
             it["priority"],
             it["status"],
             str(it["age_days"]),
+            str(it["sla_days"]),
             f"{it['amount_at_risk']:.2f}",
             f"{it['priority_score']:.2f}",
         )

@@ -101,8 +101,14 @@ def dq_dataset_scores(store: DuckDBStore, config_path: Path | str | None = None)
     return pd.DataFrame(rows).sort_values("dataset_name").reset_index(drop=True)
 
 
-def exception_queue(store: DuckDBStore, as_of: datetime, sla_days: int = 7) -> pd.DataFrame:
-    """Exception queue with computed aging + priority (most urgent first)."""
+def exception_queue(
+    store: DuckDBStore, as_of: datetime, sla_days: int | None = None
+) -> pd.DataFrame:
+    """Exception queue with computed aging + priority (most urgent first).
+
+    ``sla_days=None`` (the default) resolves each item's SLA window from its
+    severity; pass a value to use the same window for every item.
+    """
     items = ExceptionManager(store=store, as_of=as_of).list(sla_days=sla_days)
     if not items:
         return pd.DataFrame()

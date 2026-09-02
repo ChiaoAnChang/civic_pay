@@ -1,6 +1,8 @@
 """Exception workflow — priority scoring and SLA aging (spec §14.3 / §17.3 Ticket 6).
 
-Priority is computed on read (not persisted) so it never goes stale:
+Priority is computed on read (not persisted) so it never goes stale — it is a
+non-authoritative triage aid, not an audit record; the auditable fact for a
+resolved exception is its ``exception_resolve`` ledger event, not this score:
 
     priority_score = severity_weight × amount_at_risk_factor × age_factor
 
@@ -11,6 +13,13 @@ Priority is computed on read (not persisted) so it never goes stale:
 
 ``amount_at_risk`` is resolved by looking up the referenced record's amount
 (transactions / payment_records); 0 when no amount applies.
+
+SLA window: by default it is resolved *per severity* (``SLA_DAYS_BY_SEVERITY``)
+rather than one global value — a high-severity item and a low-severity one
+plausibly deserve very different escalation windows even though
+``severity_weight`` already scales urgency once an item does escalate. Pass an
+explicit ``sla_days`` to override with a single value for every item (e.g. the
+CLI's ``--sla-days`` flag).
 """
 
 from __future__ import annotations
@@ -20,9 +29,21 @@ from datetime import datetime
 SEVERITY_WEIGHTS: dict[str, float] = {"high": 3.0, "medium": 2.0, "low": 1.0}
 DEFAULT_SLA_DAYS = 7
 
+# Per-severity SLA windows (days), used when no explicit ``sla_days`` override
+# is given. A high-severity item starts escalating sooner than a low-severity
+# one — the canonical shape of a real SLA policy (P1/P2/P3 response windows).
+SLA_DAYS_BY_SEVERITY: dict[str, int] = {"high": 3, "medium": 7, "low": 14}
+
 
 def severity_weight(priority: str) -> float:
     return SEVERITY_WEIGHTS.get(str(priority).lower(), 1.0)
+
+
+def resolve_sla_days(priority: str, sla_days: int | None) -> int:
+    """Resolve the SLA window: an explicit override, or the per-severity default."""
+    if sla_days is not None:
+        return sla_days
+    return SLA_DAYS_BY_SEVERITY.get(str(priority).lower(), DEFAULT_SLA_DAYS)
 
 
 def amount_at_risk_factor(amount: float) -> float:
@@ -49,13 +70,18 @@ def compute_priority_score(
     priority: str,
     amount_at_risk: float,
     age_days: int,
-    sla_days: int = DEFAULT_SLA_DAYS,
+    sla_days: int | None = None,
 ) -> float:
-    """Full priority score (higher = more urgent)."""
+    """Full priority score (higher = more urgent).
+
+    ``sla_days=None`` (the default) resolves the SLA window per severity via
+    ``resolve_sla_days``; pass an explicit value to use the same window for
+    every priority (e.g. a CLI override).
+    """
     return round(
         severity_weight(priority)
         * amount_at_risk_factor(amount_at_risk)
-        * age_factor(age_days, sla_days),
+        * age_factor(age_days, resolve_sla_days(priority, sla_days)),
         4,
     )
 

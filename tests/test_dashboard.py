@@ -115,6 +115,7 @@ def test_exception_queue_has_aging_and_priority(seeded_store):
         "priority",
         "status",
         "age_days",
+        "sla_days",
         "amount_at_risk",
         "priority_score",
     ):

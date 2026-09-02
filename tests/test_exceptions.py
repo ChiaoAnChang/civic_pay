@@ -11,9 +11,11 @@ from civicpay.data.synthetic import AS_OF_DATETIME, generate_all
 from civicpay.exceptions.queue import ExceptionManager
 from civicpay.exceptions.workflow import (
     DEFAULT_SLA_DAYS,
+    SLA_DAYS_BY_SEVERITY,
     age_factor,
     amount_at_risk_factor,
     compute_priority_score,
+    resolve_sla_days,
     severity_weight,
 )
 from civicpay.storage.duckdb import DuckDBStore
@@ -75,6 +77,27 @@ def test_compute_priority_score_combines_factors():
     assert compute_priority_score("low", 50, 0) == 1.0
 
 
+def test_resolve_sla_days_per_severity_by_default():
+    assert resolve_sla_days("high", None) == SLA_DAYS_BY_SEVERITY["high"] == 3
+    assert resolve_sla_days("medium", None) == SLA_DAYS_BY_SEVERITY["medium"] == 7
+    assert resolve_sla_days("low", None) == SLA_DAYS_BY_SEVERITY["low"] == 14
+    assert resolve_sla_days("unknown", None) == DEFAULT_SLA_DAYS
+
+
+def test_resolve_sla_days_explicit_override_wins():
+    assert resolve_sla_days("high", 30) == 30
+    assert resolve_sla_days("low", 1) == 1
+
+
+def test_compute_priority_score_defaults_to_per_severity_sla():
+    # high severity escalates from day 3, not the old global default of 7.
+    assert compute_priority_score("high", 0, 10) == severity_weight("high") * 1.0 * age_factor(
+        10, 3
+    )
+    # low severity has more headroom (14 days) before escalating.
+    assert compute_priority_score("low", 0, 10) == severity_weight("low") * 1.0 * age_factor(10, 14)
+
+
 # --------------------------------------------------------------------------- #
 # Fixtures
 # --------------------------------------------------------------------------- #
@@ -128,16 +151,30 @@ def test_list_sorts_by_priority_score_desc(seeded_store):
             _exc_row("E1", ref="accounts:ACC-1", priority="low", created_at=as_of),  # 1*1*1 = 1.0
             _exc_row(
                 "E2", ref="accounts:ACC-2", priority="high", created_at=as_of - timedelta(days=10)
-            ),  # 3*1*2.5 = 7.5
+            ),  # high SLA=3 -> age_factor(10,3)=4.5 -> 3*1*4.5 = 13.5
             _exc_row(
                 "E3", ref="accounts:ACC-3", priority="medium", created_at=as_of - timedelta(days=5)
-            ),  # 2*1*1 = 2.0
+            ),  # medium SLA=7 -> age_factor(5,7)=1.0 -> 2*1*1 = 2.0
         ],
     )
     items = ExceptionManager(store=seeded_store, as_of=as_of).list()
     ids = [i["exception_id"] for i in items]
     assert ids == ["E2", "E3", "E1"]
-    assert items[0]["priority_score"] == 7.5
+    assert items[0]["priority_score"] == 13.5
+    assert items[0]["sla_days"] == 3
+
+
+def test_list_sla_days_override_applies_to_every_item(seeded_store):
+    as_of = AS_OF_DATETIME
+    _write_exc(
+        seeded_store,
+        [
+            _exc_row("E1", ref="accounts:ACC-1", priority="high", created_at=as_of),
+            _exc_row("E2", ref="accounts:ACC-2", priority="low", created_at=as_of),
+        ],
+    )
+    items = ExceptionManager(store=seeded_store, as_of=as_of).list(sla_days=30)
+    assert {i["exception_id"]: i["sla_days"] for i in items} == {"E1": 30, "E2": 30}
 
 
 def test_list_filters_by_status(seeded_store):
