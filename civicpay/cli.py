@@ -315,5 +315,13 @@ def audit_export(
     )
 
 
+@app.command("dashboard")
+def dashboard() -> None:
+    """Launch the Streamlit dashboard (recon, DQ, exceptions, audit views)."""
+    from civicpay.dashboard.app import run_streamlit_app
+
+    raise SystemExit(run_streamlit_app())
+
+
 if __name__ == "__main__":
     app()
