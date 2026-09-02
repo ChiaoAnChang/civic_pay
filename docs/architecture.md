@@ -1,0 +1,36 @@
+# Architecture
+
+This document summarizes the CivicPay Open Framework architecture. See the
+project charter (Part 2, Section 11) for the full specification.
+
+## Tech stack
+
+Python 3.11+ · DuckDB (embedded) · dbt (v0.2) · Streamlit · Faker · Typer · RapidFuzz · pytest · ruff.
+
+## Data flow
+
+```
+[Synthetic data generator] -> raw/ (CSV/Parquet)
+        |
+        v
+[Ingest] -> DuckDB raw tables
+        |
+        v
+[Reconciliation module] -> recon_results -> [Exception queue]
+        |        \                                              |
+        |         \-> audit events -----------------------> [Audit-evidence log] (hash-chained)
+        |
+        +->[Data-quality module] -> dq_results -> [Exception queue]
+                                                              |
+                                                              v
+                                              [Streamlit dashboard] <- reads all marts
+        |
+        v
+[dbt marts (v0.2)] -> analytical tables -> [Audit export / evidence package]
+```
+
+## Storage
+
+DuckDB is embedded (in-process, file-based). No cloud account or DBA required —
+critical for adoption by under-resourced institutions. The reference
+implementation runs entirely on synthetic data.
