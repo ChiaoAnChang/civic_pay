@@ -98,6 +98,6 @@ Coverage: scoring (5), completeness (4), accuracy (4), consistency (2), timeline
 ## Design notes & limitations
 
 - **Determinism:** scores are deterministic given a fixed `--seed` and `--date`.
-- **Re-runs:** `dq_results` is replaced per run; `audit_event_log` and `exception_queue` are append-only — use a fresh `--batch-id` per run.
-- **Synthetic data:** the timeliness check fires on ~3% of synthetic transactions (records older than 30 days vs the as-of date). This is realistic for a demo and does not affect the reconciliation DoD counts.
+- **Re-runs:** `dq_results` is replaced per run; `audit_event_log` and `exception_queue` are append-only — use a fresh `--batch-id` per run (a pre-flight check blocks re-runs with a used `batch_id` and prints a clear error instead of a raw primary-key collision).
+- **Synthetic data:** a genuinely-stale cohort (~3.5% of transactions, `STALE_FRACTION` in `civicpay/data/synthetic.py`) is seeded with `created_at` dates 45/60/90 days before the as-of date, so the timeliness check catches meaningful staleness rather than a date-range boundary artifact. (An earlier design let the timeliness check fire on Aug-1 postings that were only 31 days old vs the Sep-1 as-of date — 1 day over the 30-day threshold — which looked like a bug rather than a deliberate DQ finding.) The stale cohort sits beyond the payment-matching pools (exact/fuzzy/amount-mismatch), so it does not affect the reconciliation DoD counts, and `payment_records` stay fully within the 30-day window.
 - **Anomaly checks** are z-score / IQR only; more sophisticated detectors (isolation forest, etc.) are deferred.

@@ -10,6 +10,8 @@ from civicpay.data.synthetic import (
     BUCKET_EXACT,
     BUCKET_FUZZY,
     BUCKET_UNMATCHED,
+    STALE_AGES_DAYS,
+    STALE_FRACTION,
     bucket_counts,
     generate_all,
     generate_payment_file,
@@ -126,3 +128,83 @@ def test_generate_payment_file_smoke():
     pf, pr = generate_payment_file(txns, fake, rng)
     assert len(pf) == 1
     assert len(pr) == 1_000
+
+
+def test_stale_cohort_is_genuinely_old():
+    """A ~3.5% cohort of transactions is seeded with genuinely old created_at
+    dates (45/60/90 days), not a date-range boundary artifact (OPEN_QUESTIONS §D)."""
+    from civicpay.data.synthetic import AS_OF_DATETIME
+
+    data = generate_all(seed=42, volumes={"customers": 500, "accounts": 200, "transactions": 2_000})
+    txns = data[M.Transaction.TABLE]
+    as_of = pd.Timestamp(AS_OF_DATETIME).tz_convert("UTC").tz_localize(None)
+    created = pd.to_datetime(txns["created_at"], errors="coerce")
+    if getattr(created.dt, "tz", None) is not None:
+        created = created.dt.tz_convert("UTC").dt.tz_localize(None)
+    age_days = (as_of - created).dt.days
+
+    stale = age_days[age_days > 30]
+    expected = round(2_000 * STALE_FRACTION)
+    assert len(stale) == expected
+    # Every stale record is genuinely old (one of the seeded ages), never a
+    # 31-day boundary artifact.
+    assert sorted(stale.unique().tolist()) == list(STALE_AGES_DAYS)
+
+    # The non-stale bulk is recent (<=30 days) and never 31 days.
+    recent = age_days[age_days <= 30]
+    assert recent.max() <= 30
+
+
+def test_stale_cohort_beyond_payment_pools():
+    """Stale cohort records sit beyond the payment-matching pools, so they are
+    unmatched_ledger and the reconciliation outcome counts are unaffected."""
+    from civicpay.data.synthetic import _PAYMENT_POOL_SIZE
+
+    data = generate_all(seed=42, volumes={"customers": 500, "accounts": 200, "transactions": 2_000})
+    txns = data[M.Transaction.TABLE]
+    # Stale cohort is the tail slice; its start index is >= the pool size.
+    stale_count = round(2_000 * STALE_FRACTION)
+    stale_start = len(txns) - stale_count
+    assert stale_start >= _PAYMENT_POOL_SIZE
+    # And the recon bucket counts are exactly the designed sizes.
+    counts = bucket_counts(data[M.PaymentRecord.TABLE], txns)
+    assert counts["exact"] == BUCKET_EXACT
+    assert counts["unmatched"] == BUCKET_UNMATCHED
+    assert counts["fuzzy"] == BUCKET_FUZZY
+
+
+def test_payment_records_are_fresh():
+    """Payment records stay within the 30-day timeliness window (the stale cohort
+    is ledger-only; stale payments would escalate and change recon counts)."""
+    from civicpay.data.synthetic import AS_OF_DATETIME
+
+    data = generate_all(seed=42)
+    pr = data[M.PaymentRecord.TABLE]
+    as_of = pd.Timestamp(AS_OF_DATETIME).tz_convert("UTC").tz_localize(None)
+    pdates = pd.to_datetime(pr["payment_date"], errors="coerce")
+    if getattr(pdates.dt, "tz", None) is not None:
+        pdates = pdates.dt.tz_convert("UTC").dt.tz_localize(None)
+    age_days = (as_of - pdates).dt.days
+    assert (age_days <= 30).all()
+
+
+def test_stale_cohort_skipped_below_pool_size():
+    """Small transaction volumes (<= the payment-pool size) inject no stale
+    cohort, so genuinely-old postings never leak into the exact/fuzzy/
+    amount-mismatch buckets and distort the recon DoD (OPEN_QUESTIONS §D)."""
+    from civicpay.data.synthetic import _PAYMENT_POOL_SIZE
+
+    data = generate_all(
+        seed=42, volumes={"customers": 100, "accounts": 50, "transactions": _PAYMENT_POOL_SIZE}
+    )
+    txns = data[M.Transaction.TABLE]
+    assert len(txns) == _PAYMENT_POOL_SIZE
+    # n == pool size -> stale_count == 0, so all rows are recent (<=30 days).
+    from civicpay.data.synthetic import AS_OF_DATETIME
+
+    as_of = pd.Timestamp(AS_OF_DATETIME).tz_convert("UTC").tz_localize(None)
+    created = pd.to_datetime(txns["created_at"], errors="coerce")
+    if getattr(created.dt, "tz", None) is not None:
+        created = created.dt.tz_convert("UTC").dt.tz_localize(None)
+    age_days = (as_of - created).dt.days
+    assert (age_days <= 30).all()

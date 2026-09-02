@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fast with `BatchIdAlreadyUsedError` (a clear, actionable message) instead of
   a raw DuckDB primary-key constraint error mid-run. `civicpay run-all` checks
   both derived batch ids (`{run_id}-RECON`, `{run_id}-DQ`) up front.
+- **Genuinely-stale transaction cohort** (OPEN_QUESTIONS §D): synthetic
+  transactions now include a ~3.5% cohort with `created_at` dates 45/60/90 days
+  before the as-of date, so the timeliness DQ check catches meaningful staleness
+  instead of an Aug-1 boundary artifact (records that were only 31 days old).
+  Payment records stay fresh; reconciliation DoD counts are unchanged.
 - Trusted Publishing (OIDC) for PyPI: releases are published via GitHub Actions
   identity, no shared API token secret required.
 - Version is now derived from git tags via `hatch-vcs` (`dynamic = ["version"]`).

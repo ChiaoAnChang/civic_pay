@@ -44,6 +44,21 @@ BUCKET_FUZZY = 40
 BUCKET_DUPLICATE = 20
 BUCKET_AMOUNT_MISMATCH = 10
 
+# Size of the transaction tail consumed by the payment-matching buckets
+# (exact + fuzzy + amount-mismatch). The genuinely-stale cohort is injected
+# BEYOND this index so it never participates in payment matching and the
+# reconciliation outcome counts are unaffected.
+_PAYMENT_POOL_SIZE = BUCKET_EXACT + BUCKET_FUZZY + BUCKET_AMOUNT_MISMATCH
+
+# Intentionally stale cohort (OPEN_QUESTIONS §D): a small fraction of ledger
+# transactions are seeded with genuinely old created_at dates (45/60/90 days
+# before the as-of date) so the timeliness DQ check catches meaningful
+# staleness rather than a date-range boundary artifact. Without this, the only
+# "stale" records were August-1 postings that happened to be 31 days old vs the
+# September-1 as-of date — i.e. 1 day over the threshold.
+STALE_FRACTION = 0.035
+STALE_AGES_DAYS = (45, 60, 90)
+
 
 def _utcnow() -> datetime:
     """Return the fixed as-of datetime (deterministic, never wall-clock now)."""
@@ -154,7 +169,11 @@ def generate_transactions(
     """
     acct_ids = accounts["account_id"].tolist()
     rows: list[dict[str, Any]] = []
-    base_date = date(2026, 8, 1)
+    # Recent bulk: Aug 3..31 (max 29 days old vs the Sep 1 as-of date, so none
+    # are stale by the 30-day threshold). Starts on Aug 3 (not Aug 1) so that
+    # fuzzy-bucket payments shifted back by one day still land on Aug 2 (30
+    # days, not stale) rather than Aug 1 (31 days, a boundary artifact).
+    base_date = date(2026, 8, 3)
     for i in range(1, n + 1):
         posting = fake.date_between(start_date=base_date, end_date=date(2026, 8, 31))
         value = posting + timedelta(days=rng.randint(0, 2))
@@ -187,6 +206,22 @@ def generate_transactions(
                 )[0],
             }
         )
+
+    # Inject a genuinely stale cohort at the tail (beyond the payment-matching
+    # pools) so the timeliness check catches meaningful staleness. These records
+    # are unmatched_ledger in reconciliation (their REF-T ids match no payment),
+    # so the recon outcome counts are unaffected. No rng is consumed here — the
+    # value_date offset is index-based, keeping the payment generator's rng
+    # input identical to before this cohort existed.
+    stale_count = min(round(n * STALE_FRACTION), max(0, n - _PAYMENT_POOL_SIZE))
+    if stale_count > 0:
+        for j, row in enumerate(rows[-stale_count:]):
+            age = STALE_AGES_DAYS[j % len(STALE_AGES_DAYS)]
+            posting = AS_OF_DATE - timedelta(days=age)
+            row["posting_date"] = posting
+            row["value_date"] = posting + timedelta(days=j % 3)
+            row["created_at"] = datetime.combine(posting, datetime.min.time()).replace(tzinfo=UTC)
+
     return pd.DataFrame(rows)
 
 
