@@ -2,6 +2,8 @@ name: Install
 
 # Verifies the package is pip-installable and the CLI + dashboard import cleanly
 # in a fresh environment (the "PyPI-publishable install" check from Ticket 10).
+# On v* tags, publishes to PyPI using Trusted Publishing (OIDC) — no shared
+# secret required.
 
 on:
   push:
@@ -19,6 +21,8 @@ jobs:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so hatch-vcs can read git tags
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -48,19 +52,21 @@ jobs:
     needs: install
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    environment: pypi
+    environment: pypi  # manual approval gate before an irreversible upload
     permissions:
-      id-token: write
+      id-token: write  # required for Trusted Publishing (OIDC)
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build and publish to PyPI
+      - name: Build distributions
         run: |
-          python -m pip install --upgrade pip build twine
+          python -m pip install --upgrade pip build
           python -m build
-          python -m twine upload --non-interactive dist/*
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+      - name: Publish to PyPI (Trusted Publishing / OIDC)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

@@ -31,3 +31,12 @@ data/processed/*
 # OS files
 .DS_Store
 Thumbs.db
+
+# build artifacts
+civicpay/_version.py
+*.egg-info/
+build/
+dist/
+__pycache__/
+*.pyc
+data/processed/*.duckdb
