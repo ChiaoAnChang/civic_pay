@@ -1,0 +1,59 @@
+# Data-quality check configuration (spec §14.2).
+#
+# Each dataset maps to a list of typed checks. Each check:
+#   type: completeness | accuracy | consistency | timeliness | anomaly
+#   name: human-readable check name
+#   severity: high | medium | low   (provisional exception priority; Ticket 6 refines)
+#   route_failures: true | false     (default: false for anomaly, true otherwise)
+#   rule + params: type-specific (see civicpay.quality.checks.run_check)
+#
+# type_weights: per check-TYPE weights for the dataset quality score (§12).
+# max_exceptions_per_check: cap on exception_queue items written per check.
+# The full failing_records count is always stored in dq_results regardless of the cap.
+
+type_weights:
+  completeness: 1.0
+  accuracy: 1.0
+  consistency: 1.0
+  timeliness: 1.0
+  anomaly: 0.5   # informational; lower weight in the dataset score
+
+max_exceptions_per_check: 25
+
+datasets:
+  transactions:
+    table: transactions
+    id_field: transaction_id
+    checks:
+      - {type: completeness, name: "No null reference ids", field: reference_id, severity: high}
+      - {type: completeness, name: "No null amounts", field: amount, severity: high}
+      - {type: accuracy, name: "Amount non-negative", rule: range, field: amount, min: 0, severity: high}
+      - {type: accuracy, name: "Valid transaction type", rule: enum, field: transaction_type, values: [debit, credit], severity: medium}
+      - {type: accuracy, name: "Valid status", rule: enum, field: status, values: [posted, pending, reversed], severity: medium}
+      - {type: accuracy, name: "Account exists", rule: referential, field: account_id, reference_dataset: accounts, reference_field: account_id, severity: high}
+      - {type: timeliness, name: "Not stale (>30d)", field: created_at, max_age_days: 30, severity: low}
+      - {type: anomaly, name: "Amount z-score outliers", rule: zscore, field: amount, threshold: 3.0, severity: low, route_failures: false}
+
+  accounts:
+    table: accounts
+    id_field: account_id
+    checks:
+      - {type: completeness, name: "No null customer ids", field: customer_id, severity: high}
+      - {type: accuracy, name: "Valid account type", rule: enum, field: account_type, values: [checking, savings, loan, credit_card], severity: medium}
+      - {type: accuracy, name: "Valid status", rule: enum, field: status, values: [active, closed], severity: medium}
+      - {type: consistency, name: "Available <= current (non-loan)", rule: available_le_current, severity: high}
+
+  customers:
+    table: customers
+    id_field: customer_id
+    checks:
+      - {type: completeness, name: "No null emails", field: email, severity: medium}
+      - {type: accuracy, name: "Valid customer type", rule: enum, field: customer_type, values: [individual, business], severity: low}
+
+  payment_records:
+    table: payment_records
+    id_field: payment_id
+    checks:
+      - {type: completeness, name: "No null reference ids", field: reference_id, severity: high}
+      - {type: accuracy, name: "Amount non-negative", rule: range, field: amount, min: 0, severity: high}
+      - {type: timeliness, name: "Not stale (>30d)", field: payment_date, max_age_days: 30, severity: low}

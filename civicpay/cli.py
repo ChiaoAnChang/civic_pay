@@ -15,6 +15,7 @@ from rich.table import Table
 
 from civicpay.data import models as M
 from civicpay.data.synthetic import AS_OF_DATE, generate_all
+from civicpay.quality.pipeline import run_dq
 from civicpay.recon.pipeline import run_recon
 from civicpay.storage.duckdb import DEFAULT_DB_PATH, DuckDBStore
 
@@ -144,6 +145,48 @@ def recon_run(
         as_of=as_of,
     )
     console.print(f"[green]Done.[/] Reconciliation batch {summary['batch_id']}")
+
+
+dq_app = typer.Typer(name="dq", help="Data-quality monitoring.", no_args_is_help=True)
+app.add_typer(dq_app)
+
+
+@dq_app.command("check")
+def dq_check(
+    dataset: str = typer.Option(
+        None, help="Check only this dataset (default: all configured datasets)."
+    ),
+    batch_id: str = typer.Option("DQ-001", help="Data-quality batch id."),
+    db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
+    config: str = typer.Option("config/dq_checks.yml", help="DQ config YAML."),
+    date: str = typer.Option(str(AS_OF_DATE), help="As-of date (YYYY-MM-DD) for staleness."),
+) -> None:
+    """Run data-quality checks across datasets in DuckDB.
+
+    Reads each configured dataset from DuckDB, runs its checks, writes
+    ``dq_results`` (replaced per run), routes per-record failures to the
+    ``exception_queue``, emits tamper-evident audit events, and prints a
+    per-dataset quality-score summary.
+    """
+    from datetime import datetime
+
+    from civicpay.data.synthetic import AS_OF_DATETIME
+
+    as_of = (
+        datetime.fromisoformat(date).replace(tzinfo=AS_OF_DATETIME.tzinfo)
+        if date
+        else AS_OF_DATETIME
+    )
+    summary = run_dq(
+        db_path=db_path,
+        config_path=config,
+        batch_id=batch_id,
+        dataset=dataset,
+        as_of=as_of,
+    )
+    scores = summary["per_dataset_scores"]
+    score_str = ", ".join(f"{k}={v:.2f}" for k, v in scores.items())
+    console.print(f"[green]Done.[/] DQ batch {summary['batch_id']} — {score_str}")
 
 
 if __name__ == "__main__":

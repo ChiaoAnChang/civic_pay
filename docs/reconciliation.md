@@ -291,7 +291,7 @@ civicpay recon run
 from civicpay.recon.matcher import ReconConfig, reconcile
 
 results, ledger, summary = reconcile(
-    payments=payments_df,           # pandas.DataFrame
+    payments=payments_df,  # pandas.DataFrame
     transactions=transactions_df,  # pandas.DataFrame
     config=ReconConfig(),
     batch_id="BATCH-001",
@@ -325,6 +325,7 @@ Or use the convenience entry point:
 
 ```python
 from civicpay.recon.pipeline import run_recon
+
 summary = run_recon(db_path="…", config_path="config/recon.yml", batch_id="BATCH-001")
 ```
 

@@ -329,7 +329,9 @@ def test_no_transactions_all_payments_unmatched():
         [_pay("P1", "REF-A", 100.0, "USD", d), _pay("P2", "REF-B", 200.0, "USD", d)],
         ignore_index=True,
     )
-    txns = pd.DataFrame(columns=["transaction_id", "reference_id", "amount", "currency", "posting_date"])
+    txns = pd.DataFrame(
+        columns=["transaction_id", "reference_id", "amount", "currency", "posting_date"]
+    )
     results, ledger, summary = _recon(pays, txns)
     assert len(results) == 2
     assert all(r.match_status == M.MatchStatus.UNMATCHED_PAYMENT for r in results)
@@ -467,8 +469,7 @@ def test_tampered_event_hash_detected_on_recompute(fresh_store):
 
     # Tamper: alter the action of one event (but keep its stored hash).
     fresh_store.query(
-        f"UPDATE {M.AuditEvent.TABLE} SET action = 'tampered' "
-        f"WHERE event_id = ?",
+        f"UPDATE {M.AuditEvent.TABLE} SET action = 'tampered' WHERE event_id = ?",
         [events.at[target_idx, "event_id"]],
     )
 
