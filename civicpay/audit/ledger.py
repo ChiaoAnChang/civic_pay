@@ -106,11 +106,31 @@ class AuditLedger:
     _chain_initialized: bool = field(default=False, init=False)
 
     def _initialize_chain(self) -> None:
-        """Resume the chain from the most recent persisted event, if any."""
+        """Resume the chain from its true tip, if any.
+
+        The tip is *not* well-approximated by ``ORDER BY timestamp DESC,
+        event_id DESC`` — that was tried and is unsound. Multiple batches
+        (recon, DQ, ...) share the same deterministic ``as_of`` timestamp, so
+        ties break on ``event_id`` (which embeds the batch id) as a plain
+        string: e.g. ``"EVT-R1-..."`` sorts after ``"EVT-D1-..."`` regardless
+        of which was actually appended more recently. A *new* ``AuditLedger``
+        instance created after several same-timestamp batches already coexist
+        (as the OPEN_QUESTIONS §G backlog cohort does, appending its own
+        events right after the main DQ batch's) could then resume from a
+        stale, non-tip event — and if that event already has a different
+        child, the new append forks the chain (observed in practice: a
+        ``chain_fork`` at the true tip's predecessor).
+
+        The chain's own structure gives an unambiguous, ordering-free answer
+        instead: the tip is whichever ``event_hash`` is never referenced as
+        anyone's ``previous_hash``.
+        """
         try:
             row = self.store.execute(
-                f"SELECT event_hash FROM {M.AuditEvent.TABLE} "
-                "ORDER BY timestamp DESC, event_id DESC LIMIT 1"
+                f"SELECT event_hash FROM {M.AuditEvent.TABLE} t "
+                f"WHERE NOT EXISTS ("
+                f"SELECT 1 FROM {M.AuditEvent.TABLE} n WHERE n.previous_hash = t.event_hash"
+                f") LIMIT 1"
             ).fetchone()
         except Exception:
             row = None

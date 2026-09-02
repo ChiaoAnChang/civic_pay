@@ -107,6 +107,41 @@ def test_verify_batch_boundary_allows_prior_hash(ledger_store):
     assert report["event_count"] == 2
 
 
+def test_new_ledger_resumes_from_true_tip_not_alphabetical_max(ledger_store):
+    """A new ``AuditLedger``'s chain-resume must not depend on batch-id string
+    ordering.
+
+    Regression for a fork found while implementing OPEN_QUESTIONS §G: two
+    batches sharing a timestamp, seeded in real order "ZZZ" then "AAA"
+    (alphabetically the wrong way round), used to make a *third*, freshly
+    created ``AuditLedger`` resume from "ZZZ"'s stale tip instead of "AAA"'s
+    true one (the old resume query was ``ORDER BY timestamp DESC, event_id
+    DESC``, and "EVT-ZZZ-..." sorts after "EVT-AAA-..." regardless of which
+    was actually appended more recently) -- forking the chain, since "AAA"'s
+    own first event had already legitimately chained onto "ZZZ"'s tip.
+    """
+    _seed_chain(ledger_store, batch_id="ZZZ", n=5)
+    _seed_chain(ledger_store, batch_id="AAA", n=3)
+
+    third = AuditLedger(store=ledger_store, actor="tester", as_of=AS_OF_DATETIME)
+    row = third.append(
+        event_type=M.AuditEventType.MATCH,
+        entity_type="payment",
+        entity_id="P-LAST",
+        action="reconcile",
+        batch_id="M1",
+    )
+    aaa_last_hash = ledger_store.query(
+        f"SELECT event_hash FROM {M.AuditEvent.TABLE} WHERE event_id = 'EVT-AAA-000003'"
+    )["event_hash"].iloc[0]
+    assert row["previous_hash"] == aaa_last_hash
+
+    report = verify_chain(ledger_store)  # full chain
+    assert report["verified"] is True
+    assert report["event_count"] == 9
+    assert report["broken_event"] is None
+
+
 # --------------------------------------------------------------------------- #
 # export_evidence
 # --------------------------------------------------------------------------- #

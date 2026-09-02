@@ -4,7 +4,10 @@ Loads datasets from DuckDB, runs configured data-quality checks, writes
 ``dq_results`` (replaced per run), routes per-record failures to the
 ``exception_queue`` (capped), emits tamper-evident audit events (``dq_check``
 per check + ``exception_open`` per routed item), computes per-dataset quality
-scores (spec §12), and prints a summary.
+scores (spec §12), and prints a summary. On a full-config run against a fresh
+database, also seeds a small deterministic backlog of already-aged exceptions
+(``BACKLOG_BATCH_ID``) once, so SLA escalation is visible without wall-clock
+timestamps (see the constant's docstring-comment for the full rationale).
 
 Deterministic: uses a fixed as-of timestamp and a caller-supplied batch id, so
 repeated runs over the same data produce identical results.
@@ -18,7 +21,7 @@ to the exception-workflow ticket. This pipeline only opens items in the queue.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +52,23 @@ DATASET_TABLES: dict[str, str] = {
 }
 
 _SEVERITY_PRIORITY = {"high": "high", "medium": "medium", "low": "low"}
+
+# A small, deterministic "backlog" of already-aged exceptions (OPEN_QUESTIONS
+# §G), seeded once per fresh database. Real DQ exceptions are stamped
+# ``created_at = as_of`` (the genuine detection time — this must agree with
+# the paired ``exception_open`` ledger event), so on a static demo DB every
+# exception otherwise shows age_days=0 and the per-severity SLA escalation
+# (see civicpay.exceptions.workflow) never visibly triggers. The backlog uses
+# real failing record ids from the current run (never fabricated ones) but
+# backdates only the exception's own ``created_at`` — framed as "still open
+# from an earlier run" — while its audit event's ``timestamp`` stays
+# ``as_of`` like every other event in this run, deliberately: the ledger
+# timestamp records *when we recorded it*, distinct from the exception's own
+# (backdated) origin, and this also avoids feeding an out-of-order timestamp
+# into AuditLedger's chain-resume query (which picks the latest event by
+# timestamp to link onto — an earlier timestamp there risks a fork).
+BACKLOG_BATCH_ID = "DQ-000-PRIOR"
+BACKLOG_AGES_DAYS: tuple[int, ...] = (2, 5, 12, 21, 45)
 
 
 @dataclass
@@ -107,6 +127,12 @@ class QualityPipeline:
                 raise ValueError(f"No DQ config for dataset '{dataset}'.")
             datasets = {dataset: datasets[dataset]}
 
+        # Seed the backlog cohort only on a full-config run, and only once per
+        # database (detected the same way batch collisions are: a fixed batch
+        # id already present in the append-only audit log).
+        seed_backlog = dataset is None and not batch_id_in_use(store, BACKLOG_BATCH_ID)
+        backlog_candidates: list[tuple[str, CheckResult, str]] = []
+
         all_results: list[CheckResult] = []
         exception_rows: list[dict[str, Any]] = []
         audit_events: list[dict[str, Any]] = []
@@ -161,6 +187,19 @@ class QualityPipeline:
                 if not route or not r.failing_ids:
                     continue
                 cap = self.config.max_exceptions_per_check
+                if seed_backlog and len(backlog_candidates) < len(BACKLOG_AGES_DAYS):
+                    # Prefer failing ids beyond the cap (not already routed as
+                    # a fresh exception above) so backlog items don't
+                    # duplicate a reference_id already in this run's batch.
+                    # The synthetic data is designed so usually only one
+                    # check actually fails (see OPEN_QUESTIONS §D), so pull as
+                    # many candidates as needed from it rather than capping
+                    # at one-per-check.
+                    pool = r.failing_ids[cap:] if len(r.failing_ids) > cap else r.failing_ids
+                    for extra in pool:
+                        if len(backlog_candidates) >= len(BACKLOG_AGES_DAYS):
+                            break
+                        backlog_candidates.append((ds_name, r, extra))
                 for rid in r.failing_ids[:cap]:
                     exc_seq += 1
                     exception_rows.append(
@@ -187,6 +226,40 @@ class QualityPipeline:
                         }
                     )
 
+        exceptions_routed_this_run = len(exception_rows)
+
+        # --- Backlog cohort (§G): already-aged exceptions, seeded once ------ #
+        backlog_rows: list[dict[str, Any]] = []
+        backlog_audit_events: list[dict[str, Any]] = []
+        for i, ((bl_ds_name, r, rid), age) in enumerate(
+            zip(backlog_candidates, BACKLOG_AGES_DAYS, strict=False), start=1
+        ):
+            backlog_id = f"EXC-{BACKLOG_BATCH_ID}-{i:06d}"
+            backlog_rows.append(
+                {
+                    "exception_id": backlog_id,
+                    "source": M.ExceptionSource.DQ,
+                    "reference_id": f"{bl_ds_name}:{rid}",
+                    "priority": _SEVERITY_PRIORITY.get(r.severity, "low"),
+                    "assigned_to": None,
+                    "status": M.ExceptionStatus.OPEN,
+                    "created_at": self.as_of - timedelta(days=age),
+                    "resolved_at": None,
+                    "resolution_notes": None,
+                    "root_cause": None,
+                }
+            )
+            backlog_audit_events.append(
+                {
+                    "event_type": M.AuditEventType.EXCEPTION_OPEN,
+                    "entity_type": "exception",
+                    "entity_id": backlog_id,
+                    "action": f"exception_open:{r.check_name}",
+                    "batch_id": BACKLOG_BATCH_ID,
+                }
+            )
+        exception_rows.extend(backlog_rows)
+
         # --- Write dq_results (replace per run) ----------------------------- #
         dq_rows = [self._dq_row(r, batch_id) for r in all_results]
         store.write_dataframe(M.DQResult.TABLE, pd.DataFrame(dq_rows), mode="replace")
@@ -210,6 +283,13 @@ class QualityPipeline:
             )
         ledger_writer = AuditLedger(store=store, actor=actor, as_of=self.as_of)
         ledger_writer.append_many(audit_events)
+        if backlog_audit_events:
+            # A separate AuditLedger instance: an instance's event_id prefix
+            # locks to whichever batch_id it sees first, so a distinct batch
+            # id needs its own instance rather than sharing ledger_writer.
+            AuditLedger(store=store, actor=actor, as_of=self.as_of).append_many(
+                backlog_audit_events
+            )
 
         summary: dict[str, Any] = {
             "batch_id": batch_id,
@@ -218,7 +298,8 @@ class QualityPipeline:
             "checks_passed": sum(1 for r in all_results if r.passed),
             "checks_failed": sum(1 for r in all_results if not r.passed),
             "total_failing_records": sum(r.failing_records for r in all_results),
-            "exceptions_routed": len(exception_rows),
+            "backlog_seeded": len(backlog_rows),
+            "exceptions_routed": exceptions_routed_this_run,
             "audit_events": len(audit_events),
             "per_dataset_scores": per_dataset_scores,
             "per_dataset_anomaly_rate": per_dataset_anomaly_rate,
@@ -285,12 +366,17 @@ class QualityPipeline:
             if ds in anomaly_rates:
                 table.add_row(ds, "— anomaly rate —", "anomaly", "", "", f"{anomaly_rates[ds]:.2f}")
         console.print(table)
+        backlog_note = (
+            f" Backlog cohort seeded: {summary['backlog_seeded']} (already-aged demo items)."
+            if summary.get("backlog_seeded")
+            else ""
+        )
         console.print(
             f"Checks: {summary['checks_run']} run, {summary['checks_passed']} passed, "
             f"{summary['checks_failed']} failed. "
             f"Failing records: {summary['total_failing_records']:,}. "
             f"Exceptions routed: {summary['exceptions_routed']}. "
-            f"Audit events: {summary['audit_events']}."
+            f"Audit events: {summary['audit_events']}.{backlog_note}"
         )
 
 

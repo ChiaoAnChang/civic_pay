@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Audit hash chain could fork when two batches shared a timestamp.**
+  `AuditLedger._initialize_chain` resumed the chain via `ORDER BY timestamp
+  DESC, event_id DESC LIMIT 1` — a heuristic that assumed batch-id strings
+  sort in the order batches are actually appended. They don't (e.g.
+  `"EVT-R1-..."` sorts after `"EVT-D1-..."` regardless of which was written
+  more recently), and every pipeline here shares the same deterministic
+  `as_of` timestamp, so ties are common. A new `AuditLedger` instance
+  initializing after two prior batches already coexist could resume from a
+  stale, non-tip event and fork the chain. Found while implementing the
+  OPEN_QUESTIONS §G backlog cohort (which introduces a second `AuditLedger`
+  instance mid-run): reproduced as `civicpay run-all` failing with
+  `audit-verify BROKEN` / `chain_fork` on a fresh database. Fixed at the
+  root (`civicpay/audit/ledger.py`): `_initialize_chain` now finds the
+  chain's true tip structurally — the one `event_hash` never referenced as
+  anyone's `previous_hash` — instead of guessing from timestamp/event_id
+  ordering.
 - **Audit hash chain falsely reported as broken on any non-UTC machine.**
   `AS_OF_DATETIME` (and other timestamps) are timezone-aware (`tzinfo=UTC`),
   but every DuckDB `TIMESTAMP` column is timezone-naive. Writing a tz-aware
@@ -26,6 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   setting up a fresh local dev environment (Windows, UTC-5) to verify
   OPEN_QUESTIONS §E — 10 of 11 test failures in that environment traced back
   to this one root cause.
+
+### Added
+- **Deterministic exception backlog cohort** (OPEN_QUESTIONS §G): on a
+  full-config `dq check`/`run-all` against a fresh database, `QualityPipeline`
+  now also seeds a small, fixed cohort of already-aged exceptions (real
+  failing record ids, `created_at` backdated 2/5/12/21/45 days,
+  batch id `DQ-000-PRIOR`) so SLA escalation (§F) is visible in the CLI table
+  and dashboard out of the box, instead of every exception showing
+  `age_days = 0` on a static demo DB. Genuine DQ detections still use
+  `created_at = as_of` unchanged (this must agree with the paired
+  `exception_open` audit event). Seeded once — idempotent on re-run via the
+  same `batch_id_in_use` check pipelines already use for their own batch ids.
+  `summary["backlog_seeded"]` reports the count (0 after the first run).
+  `exception list` / the dashboard also gained a per-item `sla_days` column.
 
 ### Changed
 - **Per-severity SLA windows for exception aging** (OPEN_QUESTIONS §F):

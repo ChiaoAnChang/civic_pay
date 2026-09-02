@@ -25,7 +25,12 @@ from civicpay.quality.checks import (
     check_timeliness_staleness,
     run_check,
 )
-from civicpay.quality.pipeline import QualityPipeline, load_config
+from civicpay.quality.pipeline import (
+    BACKLOG_AGES_DAYS,
+    BACKLOG_BATCH_ID,
+    QualityPipeline,
+    load_config,
+)
 from civicpay.quality.scoring import anomaly_rate, check_quality_score, dataset_quality_score
 from civicpay.storage.duckdb import DuckDBStore
 
@@ -464,6 +469,66 @@ def test_pipeline_dq_check_id_and_exception_id_deterministic():
         store.close()
     assert check_ids[0] == check_ids[1]  # deterministic check ids
     assert scores[0] == scores[1]  # deterministic scores
+
+
+# --------------------------------------------------------------------------- #
+# Backlog cohort (§G: SLA aging visible without wall-clock timestamps)
+# --------------------------------------------------------------------------- #
+
+
+def _fresh_synthetic_store() -> DuckDBStore:
+    store = DuckDBStore(":memory:")
+    store.init_schema()
+    data = generate_all(seed=42, volumes={"customers": 500, "accounts": 200, "transactions": 2000})
+    store.write_many(data, mode="replace")
+    return store
+
+
+def test_backlog_cohort_seeded_with_expected_ages():
+    store = _fresh_synthetic_store()
+    summary = QualityPipeline(store=store, config=load_config()).run(batch_id="DQ-BL1")
+    assert summary["backlog_seeded"] == len(BACKLOG_AGES_DAYS)
+
+    from civicpay.exceptions.queue import ExceptionManager
+
+    items = ExceptionManager(store=store, as_of=AS_OF).list()
+    backlog = {i["exception_id"]: i for i in items if BACKLOG_BATCH_ID in i["exception_id"]}
+    assert len(backlog) == len(BACKLOG_AGES_DAYS)
+    ages = sorted(i["age_days"] for i in backlog.values())
+    assert ages == sorted(BACKLOG_AGES_DAYS)
+    # Backlog reference ids are real failing records, not fabricated.
+    for item in backlog.values():
+        assert ":" in item["reference_id"]
+    store.close()
+
+
+def test_backlog_cohort_not_reseeded_on_rerun():
+    store = _fresh_synthetic_store()
+    first = QualityPipeline(store=store, config=load_config()).run(batch_id="DQ-BL2")
+    assert first["backlog_seeded"] == len(BACKLOG_AGES_DAYS)
+
+    second = QualityPipeline(store=store, config=load_config()).run(batch_id="DQ-BL3")
+    assert second["backlog_seeded"] == 0
+
+    exc = store.read_table(M.ExceptionItem.TABLE)
+    backlog_rows = exc[exc["exception_id"].str.contains(BACKLOG_BATCH_ID)]
+    assert len(backlog_rows) == len(BACKLOG_AGES_DAYS)  # not duplicated
+    store.close()
+
+
+def test_backlog_cohort_skipped_for_partial_dataset_run():
+    store = _fresh_synthetic_store()
+    partial = QualityPipeline(store=store, config=load_config()).run(
+        batch_id="DQ-BL4", dataset="accounts"
+    )
+    assert partial["backlog_seeded"] == 0
+    exc = store.read_table(M.ExceptionItem.TABLE)
+    assert not any(BACKLOG_BATCH_ID in eid for eid in exc["exception_id"])
+
+    # A later full run still seeds it.
+    full = QualityPipeline(store=store, config=load_config()).run(batch_id="DQ-BL5")
+    assert full["backlog_seeded"] == len(BACKLOG_AGES_DAYS)
+    store.close()
 
 
 def test_pipeline_single_dataset_filter(synthetic_store):
