@@ -15,6 +15,7 @@ from rich.table import Table
 
 from civicpay.data import models as M
 from civicpay.data.synthetic import AS_OF_DATE, generate_all
+from civicpay.exceptions.queue import ExceptionManager
 from civicpay.quality.pipeline import run_dq
 from civicpay.recon.pipeline import run_recon
 from civicpay.storage.duckdb import DEFAULT_DB_PATH, DuckDBStore
@@ -187,6 +188,87 @@ def dq_check(
     scores = summary["per_dataset_scores"]
     score_str = ", ".join(f"{k}={v:.2f}" for k, v in scores.items())
     console.print(f"[green]Done.[/] DQ batch {summary['batch_id']} — {score_str}")
+
+
+exc_app = typer.Typer(name="exception", help="Exception workflow.", no_args_is_help=True)
+app.add_typer(exc_app)
+
+
+@exc_app.command("list")
+def exception_list(
+    status: str = typer.Option(None, help="Filter by status: open|in_progress|resolved."),
+    sla_days: int = typer.Option(7, help="SLA threshold in days."),
+    db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
+    date: str = typer.Option(str(AS_OF_DATE), help="As-of date (YYYY-MM-DD) for aging."),
+) -> None:
+    """List exceptions, sorted by computed priority (most urgent first)."""
+    from datetime import datetime
+
+    from civicpay.data.synthetic import AS_OF_DATETIME
+
+    as_of = (
+        datetime.fromisoformat(date).replace(tzinfo=AS_OF_DATETIME.tzinfo)
+        if date
+        else AS_OF_DATETIME
+    )
+    store = DuckDBStore(db_path)
+    items = ExceptionManager(store=store, as_of=as_of).list(status=status, sla_days=sla_days)
+    store.close()
+    table = Table(title=f"Exception Queue — {len(items)} item(s)")
+    for col in (
+        "exception_id",
+        "source",
+        "priority",
+        "status",
+        "age_days",
+        "amount_at_risk",
+        "priority_score",
+    ):
+        table.add_column(
+            col,
+            justify="right" if col in ("age_days", "amount_at_risk", "priority_score") else "left",
+        )
+    for it in items:
+        table.add_row(
+            it["exception_id"],
+            it["source"],
+            it["priority"],
+            it["status"],
+            str(it["age_days"]),
+            f"{it['amount_at_risk']:.2f}",
+            f"{it['priority_score']:.2f}",
+        )
+    console.print(table)
+
+
+@exc_app.command("resolve")
+def exception_resolve(
+    id: str = typer.Option(..., help="Exception id to resolve."),
+    root_cause: str = typer.Option(..., help="Root cause of the exception."),
+    notes: str = typer.Option(None, help="Optional resolution notes."),
+    db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
+    date: str = typer.Option(str(AS_OF_DATE), help="As-of date (YYYY-MM-DD)."),
+) -> None:
+    """Resolve an exception, capture root cause, and emit an audit event."""
+    from datetime import datetime
+
+    from civicpay.data.synthetic import AS_OF_DATETIME
+
+    as_of = (
+        datetime.fromisoformat(date).replace(tzinfo=AS_OF_DATETIME.tzinfo)
+        if date
+        else AS_OF_DATETIME
+    )
+    store = DuckDBStore(db_path)
+    try:
+        result = ExceptionManager(store=store, as_of=as_of).resolve(
+            exception_id=id, root_cause=root_cause, resolution_notes=notes
+        )
+    finally:
+        store.close()
+    console.print(
+        f"[green]Resolved.[/] {result['exception_id']} — root cause: {result['root_cause']}"
+    )
 
 
 if __name__ == "__main__":

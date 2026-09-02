@@ -1,0 +1,243 @@
+"""Tests for the exception workflow (spec §17.3 Ticket 6)."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import pandas as pd
+import pytest
+from civicpay.data import models as M
+from civicpay.data.synthetic import AS_OF_DATETIME, generate_all
+from civicpay.exceptions.queue import ExceptionManager
+from civicpay.exceptions.workflow import (
+    DEFAULT_SLA_DAYS,
+    age_factor,
+    amount_at_risk_factor,
+    compute_priority_score,
+    severity_weight,
+)
+from civicpay.storage.duckdb import DuckDBStore
+
+UTC = UTC
+
+
+# --------------------------------------------------------------------------- #
+# Priority formula
+# --------------------------------------------------------------------------- #
+
+
+def test_severity_weights():
+    assert severity_weight("high") == 3.0
+    assert severity_weight("medium") == 2.0
+    assert severity_weight("low") == 1.0
+    assert severity_weight("unknown") == 1.0
+
+
+@pytest.mark.parametrize(
+    "amount,factor",
+    [
+        (0, 1.0),
+        (50, 1.0),
+        (99.99, 1.0),
+        (100, 2.0),
+        (999, 2.0),
+        (1000, 3.0),
+        (9999.99, 3.0),
+        (10000, 4.0),
+        (50000, 4.0),
+    ],
+)
+def test_amount_at_risk_factor_buckets(amount, factor):
+    assert amount_at_risk_factor(amount) == factor
+
+
+def test_age_factor_within_sla():
+    assert age_factor(0) == 1.0
+    assert age_factor(DEFAULT_SLA_DAYS) == 1.0  # boundary: exactly SLA
+
+
+def test_age_factor_escalates_past_sla():
+    # one day overdue -> +0.5
+    assert age_factor(DEFAULT_SLA_DAYS + 1) == 1.5
+    # three days overdue -> +1.5
+    assert age_factor(DEFAULT_SLA_DAYS + 3) == 2.5
+
+
+def test_age_factor_respects_custom_sla():
+    assert age_factor(5, sla_days=5) == 1.0
+    assert age_factor(6, sla_days=5) == 1.5
+
+
+def test_compute_priority_score_combines_factors():
+    # high severity, $5000 amount, 10 days old, sla 7 -> 3 * 3 * 2.5
+    assert compute_priority_score("high", 5000, 10, sla_days=7) == 22.5
+    # low severity, $50 amount, fresh -> 1 * 1 * 1
+    assert compute_priority_score("low", 50, 0) == 1.0
+
+
+# --------------------------------------------------------------------------- #
+# Fixtures
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def seeded_store():
+    store = DuckDBStore(":memory:")
+    store.init_schema()
+    data = generate_all(seed=42, volumes={"customers": 100, "accounts": 50, "transactions": 500})
+    store.write_many(data, mode="replace")
+    return store
+
+
+def _exc_row(
+    eid: str,
+    ref: str = "transactions:TXN-000001",
+    priority: str = "low",
+    status: str = M.ExceptionStatus.OPEN,
+    created_at: datetime | None = None,
+) -> dict:
+    return {
+        "exception_id": eid,
+        "source": "dq",
+        "reference_id": ref,
+        "priority": priority,
+        "assigned_to": None,
+        "status": status,
+        "created_at": created_at or AS_OF_DATETIME,
+        "resolved_at": None,
+        "resolution_notes": None,
+        "root_cause": None,
+    }
+
+
+def _write_exc(store: DuckDBStore, rows: list[dict]) -> None:
+    df = pd.DataFrame(rows)
+    store.write_dataframe(M.ExceptionItem.TABLE, df, mode="append")
+
+
+# --------------------------------------------------------------------------- #
+# Manager.list
+# --------------------------------------------------------------------------- #
+
+
+def test_list_sorts_by_priority_score_desc(seeded_store):
+    as_of = AS_OF_DATETIME
+    _write_exc(
+        seeded_store,
+        [
+            _exc_row("E1", ref="accounts:ACC-1", priority="low", created_at=as_of),  # 1*1*1 = 1.0
+            _exc_row(
+                "E2", ref="accounts:ACC-2", priority="high", created_at=as_of - timedelta(days=10)
+            ),  # 3*1*2.5 = 7.5
+            _exc_row(
+                "E3", ref="accounts:ACC-3", priority="medium", created_at=as_of - timedelta(days=5)
+            ),  # 2*1*1 = 2.0
+        ],
+    )
+    items = ExceptionManager(store=seeded_store, as_of=as_of).list()
+    ids = [i["exception_id"] for i in items]
+    assert ids == ["E2", "E3", "E1"]
+    assert items[0]["priority_score"] == 7.5
+
+
+def test_list_filters_by_status(seeded_store):
+    as_of = AS_OF_DATETIME
+    _write_exc(
+        seeded_store,
+        [
+            _exc_row("E1", status=M.ExceptionStatus.OPEN),
+            _exc_row("E2", status=M.ExceptionStatus.RESOLVED),
+        ],
+    )
+    open_items = ExceptionManager(store=seeded_store, as_of=as_of).list(
+        status=M.ExceptionStatus.OPEN
+    )
+    assert [i["exception_id"] for i in open_items] == ["E1"]
+
+
+def test_list_resolves_amount_at_risk_from_transaction(seeded_store):
+    # Pick a real transaction id and read its amount.
+    txns = seeded_store.read_table(M.Transaction.TABLE)
+    sample = txns.iloc[0]
+    ref = f"transactions:{sample['transaction_id']}"
+    expected_amount = float(sample["amount"])
+    _write_exc(seeded_store, [_exc_row("E1", ref=ref, priority="medium")])
+    items = ExceptionManager(store=seeded_store, as_of=AS_OF_DATETIME).list()
+    assert items[0]["amount_at_risk"] == pytest.approx(expected_amount, rel=1e-6)
+    # factor bucket for the actual amount
+    assert items[0]["amount_at_risk_factor"] == amount_at_risk_factor(expected_amount)
+
+
+def test_list_amount_zero_for_non_amount_dataset(seeded_store):
+    _write_exc(seeded_store, [_exc_row("E1", ref="accounts:ACC-000001", priority="high")])
+    items = ExceptionManager(store=seeded_store, as_of=AS_OF_DATETIME).list()
+    assert items[0]["amount_at_risk"] == 0.0
+    assert items[0]["amount_at_risk_factor"] == 1.0
+
+
+def test_list_amount_zero_when_reference_missing(seeded_store):
+    _write_exc(seeded_store, [_exc_row("E1", ref="transactions:DOES-NOT-EXIST", priority="high")])
+    items = ExceptionManager(store=seeded_store, as_of=AS_OF_DATETIME).list()
+    assert items[0]["amount_at_risk"] == 0.0
+
+
+def test_list_age_days_uses_created_at(seeded_store):
+    as_of = AS_OF_DATETIME
+    _write_exc(seeded_store, [_exc_row("E1", created_at=as_of - timedelta(days=12))])
+    items = ExceptionManager(store=seeded_store, as_of=as_of).list()
+    assert items[0]["age_days"] == 12
+
+
+# --------------------------------------------------------------------------- #
+# Manager.resolve
+# --------------------------------------------------------------------------- #
+
+
+def test_resolve_marks_resolved_and_captures_root_cause(seeded_store):
+    _write_exc(seeded_store, [_exc_row("E1")])
+    result = ExceptionManager(store=seeded_store, as_of=AS_OF_DATETIME).resolve(
+        "E1", root_cause="stale upstream feed"
+    )
+    assert result["status"] == M.ExceptionStatus.RESOLVED
+    row = seeded_store.read_table(M.ExceptionItem.TABLE)
+    r = row[row["exception_id"] == "E1"].iloc[0]
+    assert r["status"] == M.ExceptionStatus.RESOLVED
+    assert r["root_cause"] == "stale upstream feed"
+    # DuckDB stores timestamps tz-naive; compare against the naive value.
+    assert pd.Timestamp(r["resolved_at"]) == pd.Timestamp(AS_OF_DATETIME.replace(tzinfo=None))
+
+
+def test_resolve_emits_unique_audit_event(seeded_store):
+    _write_exc(seeded_store, [_exc_row("E1"), _exc_row("E2")])
+    mgr = ExceptionManager(store=seeded_store, as_of=AS_OF_DATETIME)
+    mgr.resolve("E1", root_cause="a")
+    mgr.resolve("E2", root_cause="b")
+    events = seeded_store.query(
+        f"SELECT * FROM {M.AuditEvent.TABLE} WHERE event_type = ? ORDER BY event_id",
+        [M.AuditEventType.EXCEPTION_RESOLVE],
+    )
+    assert len(events) == 2
+    # unique event ids
+    assert events["event_id"].iloc[0] != events["event_id"].iloc[1]
+    assert "E1" in events["event_id"].iloc[0]
+    assert "E2" in events["event_id"].iloc[1]
+
+
+def test_resolve_already_resolved_raises(seeded_store):
+    _write_exc(seeded_store, [_exc_row("E1", status=M.ExceptionStatus.RESOLVED)])
+    with pytest.raises(ValueError, match="already resolved"):
+        ExceptionManager(store=seeded_store, as_of=AS_OF_DATETIME).resolve("E1", root_cause="x")
+
+
+def test_resolve_missing_raises(seeded_store):
+    with pytest.raises(ValueError, match="not found"):
+        ExceptionManager(store=seeded_store, as_of=AS_OF_DATETIME).resolve("NOPE", root_cause="x")
+
+
+def test_assign_moves_to_in_progress(seeded_store):
+    _write_exc(seeded_store, [_exc_row("E1")])
+    ExceptionManager(store=seeded_store, as_of=AS_OF_DATETIME).assign("E1", owner="analyst-1")
+    row = seeded_store.read_table(M.ExceptionItem.TABLE)
+    r = row[row["exception_id"] == "E1"].iloc[0]
+    assert r["status"] == M.ExceptionStatus.IN_PROGRESS
+    assert r["assigned_to"] == "analyst-1"
