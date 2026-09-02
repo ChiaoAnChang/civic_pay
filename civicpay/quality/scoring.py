@@ -68,6 +68,24 @@ def dataset_quality_score(
     return round(weighted_sum / total_weight, 4)
 
 
+def anomaly_rate(check_scores: list[tuple[str, float]]) -> float | None:
+    """Mean failure rate (0-100) of the ``anomaly``-type checks, or ``None``.
+
+    Anomaly checks are excluded from ``dataset_quality_score`` by default
+    (``type_weights.anomaly: 0.0``) because they flag a small tail of records
+    by construction, so their own score sits near 100 regardless of data
+    quality elsewhere — including them in the average would inflate the
+    dataset score rather than reflect real defects. The rate is still worth
+    surfacing on its own, as the complement of the per-type score computed
+    inside ``dataset_quality_score``. Returns ``None`` when no anomaly checks
+    ran (nothing to report, as opposed to a rate of 0).
+    """
+    scores = [score for check_type, score in check_scores if check_type == "anomaly"]
+    if not scores:
+        return None
+    return round(100.0 - sum(scores) / len(scores), 4)
+
+
 def summarize(check_results: list[dict[str, Any]]) -> dict[str, Any]:
     """Build a summary dict from a list of check-result rows."""
     total_checks = len(check_results)

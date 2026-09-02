@@ -108,7 +108,7 @@ class AuditLedger:
     def _initialize_chain(self) -> None:
         """Resume the chain from the most recent persisted event, if any."""
         try:
-            row = self.store.conn.execute(
+            row = self.store.execute(
                 f"SELECT event_hash FROM {M.AuditEvent.TABLE} "
                 "ORDER BY timestamp DESC, event_id DESC LIMIT 1"
             ).fetchone()

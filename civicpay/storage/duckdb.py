@@ -9,6 +9,7 @@ any employer system.
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,32 @@ from civicpay.data import models as M
 
 # Default location for the processed DuckDB database file.
 DEFAULT_DB_PATH = Path("data/processed/civicpay.duckdb")
+
+
+def _naive_utc(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert timezone-aware datetime columns to naive UTC before a DB write.
+
+    All framework TIMESTAMP columns are timezone-naive (see ``SCHEMA_DDL``).
+    Inserting a timezone-aware pandas column silently converts it to the
+    *local system timezone* before dropping the tz info (standard DB-driver
+    behavior) — verified empirically: a UTC value written on a UTC-5 machine
+    comes back 5 hours earlier. That corrupts any value derived from a
+    tz-aware datetime (e.g. ``AS_OF_DATETIME``, tzinfo=UTC) on any machine not
+    set to UTC, and breaks the audit hash chain: ``civicpay.audit.ledger``
+    hashes the in-memory tz-aware timestamp treating it as UTC, but a verifier
+    recomputes the hash from the persisted (silently shifted) row, so the two
+    never match even with zero tampering. Converting to UTC and stripping the
+    tz here — instead of the implicit local-time conversion — keeps the
+    round-trip exact everywhere, independent of the host machine's timezone.
+    """
+    tz_cols = [c for c in df.columns if isinstance(df[c].dtype, pd.DatetimeTZDtype)]
+    if not tz_cols:
+        return df
+    df = df.copy()
+    for c in tz_cols:
+        df[c] = df[c].dt.tz_convert("UTC").dt.tz_localize(None)
+    return df
+
 
 # DDL for every framework table. Types map to DuckDB SQL types.
 SCHEMA_DDL: dict[str, str] = {
@@ -197,6 +224,7 @@ class DuckDBStore:
         unknown tables are dropped and recreated). ``mode='append'`` inserts
         rows. ``mode='overwrite'`` deletes existing rows then inserts.
         """
+        df = _naive_utc(df)
         if mode == "replace":
             if table in SCHEMA_DDL:
                 # Preserve the canonical schema/PKs: ensure the table exists,
@@ -221,11 +249,27 @@ class DuckDBStore:
         for table, df in tables.items():
             self.write_dataframe(table, df, mode=mode)
 
+    def execute(self, sql: str, params: list[Any] | None = None) -> duckdb.DuckDBPyConnection:
+        """Run a parameterized statement (INSERT/UPDATE/SELECT) against the DB.
+
+        Prefer this over ``store.conn.execute(...)`` directly whenever a
+        parameter may be a timezone-aware ``datetime`` (e.g. ``as_of``):
+        binding one into a naive TIMESTAMP column silently converts it
+        through the local system timezone (same issue ``_naive_utc`` fixes
+        for DataFrame writes — see its docstring), which is wrong on any
+        machine not set to UTC. This normalizes such parameters first.
+        """
+        params = [
+            p.astimezone(UTC).replace(tzinfo=None) if isinstance(p, datetime) and p.tzinfo else p
+            for p in (params or [])
+        ]
+        return self.conn.execute(sql, params)
+
     # -- reads ------------------------------------------------------------- #
 
     def query(self, sql: str, params: list[Any] | None = None) -> pd.DataFrame:
         """Run a SQL query and return the result as a DataFrame."""
-        return self.conn.execute(sql, params or []).df()
+        return self.execute(sql, params).df()
 
     def read_table(self, table: str, limit: int | None = None) -> pd.DataFrame:
         """Read a full table (optionally limited) into a DataFrame."""

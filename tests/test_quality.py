@@ -26,7 +26,7 @@ from civicpay.quality.checks import (
     run_check,
 )
 from civicpay.quality.pipeline import QualityPipeline, load_config
-from civicpay.quality.scoring import check_quality_score, dataset_quality_score
+from civicpay.quality.scoring import anomaly_rate, check_quality_score, dataset_quality_score
 from civicpay.storage.duckdb import DuckDBStore
 
 AS_OF = AS_OF_DATETIME
@@ -118,6 +118,23 @@ def test_dataset_score_respects_type_weights():
 
 def test_dataset_score_empty_is_100():
     assert dataset_quality_score([]) == 100.0
+
+
+def test_dataset_score_default_excludes_anomaly():
+    # Default config (config/dq_checks.yml) weights anomaly 0.0; a low anomaly
+    # score should not affect the dataset score at all when that weight is applied.
+    scores = [("completeness", 100.0), ("completeness", 80.0), ("anomaly", 10.0)]
+    assert dataset_quality_score(scores, {"anomaly": 0.0}) == pytest.approx(90.0)
+
+
+def test_anomaly_rate_is_complement_of_type_score():
+    scores = [("completeness", 100.0), ("anomaly", 95.0), ("anomaly", 85.0)]
+    # anomaly type avg = 90 -> rate = 10
+    assert anomaly_rate(scores) == pytest.approx(10.0)
+
+
+def test_anomaly_rate_none_when_no_anomaly_checks():
+    assert anomaly_rate([("completeness", 100.0)]) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -378,6 +395,10 @@ def test_pipeline_runs_all_checks(synthetic_store):
     # All dataset scores are in [0, 100].
     for score in summary["per_dataset_scores"].values():
         assert 0.0 <= score <= 100.0
+    # transactions has an anomaly check -> reported separately, excluded from
+    # its score by the default config (type_weights.anomaly: 0.0).
+    assert "transactions" in summary["per_dataset_anomaly_rate"]
+    assert set(summary["per_dataset_anomaly_rate"]) <= set(summary["per_dataset_scores"])
 
 
 def test_pipeline_writes_dq_results(synthetic_store):

@@ -104,7 +104,7 @@ class ExceptionManager:
         row = self._get(exception_id)
         if row["status"] == "resolved":
             raise ValueError(f"Exception {exception_id} is already resolved.")
-        self.store.conn.execute(
+        self.store.execute(
             f"UPDATE {M.ExceptionItem.TABLE} SET assigned_to = ?, status = ? "
             f"WHERE exception_id = ?",
             [owner, M.ExceptionStatus.IN_PROGRESS, exception_id],
@@ -121,7 +121,7 @@ class ExceptionManager:
         row = self._get(exception_id)
         if row["status"] == M.ExceptionStatus.RESOLVED:
             raise ValueError(f"Exception {exception_id} is already resolved.")
-        self.store.conn.execute(
+        self.store.execute(
             f"UPDATE {M.ExceptionItem.TABLE} SET status = ?, resolved_at = ?, "
             f"root_cause = ?, resolution_notes = ? WHERE exception_id = ?",
             [

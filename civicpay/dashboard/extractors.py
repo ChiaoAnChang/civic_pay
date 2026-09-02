@@ -8,12 +8,16 @@ running dashboard server. ``app.py`` renders their output.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from civicpay.data import models as M
 from civicpay.exceptions.queue import ExceptionManager
+from civicpay.quality.pipeline import load_config
+from civicpay.quality.scoring import anomaly_rate as _anomaly_rate
+from civicpay.quality.scoring import dataset_quality_score
 from civicpay.storage.duckdb import DuckDBStore
 
 
@@ -72,21 +76,29 @@ def dq_scores(store: DuckDBStore) -> pd.DataFrame:
     return df[cols].sort_values(["dataset_name", "check_name"]).reset_index(drop=True)
 
 
-def dq_dataset_scores(store: DuckDBStore) -> pd.DataFrame:
-    """Per-dataset aggregate quality score (mean of check scores)."""
+def dq_dataset_scores(store: DuckDBStore, config_path: Path | str | None = None) -> pd.DataFrame:
+    """Per-dataset quality score (check-type-weighted, same formula as the CLI).
+
+    Anomaly checks are excluded from ``quality_score`` by default
+    (``type_weights.anomaly: 0.0``) and reported separately in
+    ``anomaly_rate`` — see ``civicpay.quality.scoring.anomaly_rate``.
+    """
     df = store.read_table(M.DQResult.TABLE)
     if df.empty:
-        return pd.DataFrame(columns=["dataset_name", "quality_score", "checks"])
-    agg = (
-        df.groupby("dataset_name")
-        .agg(
-            quality_score=("quality_score", "mean"),
-            checks=("dq_check_id", "count"),
+        return pd.DataFrame(columns=["dataset_name", "quality_score", "anomaly_rate", "checks"])
+    type_weights = load_config(config_path).type_weights
+    rows = []
+    for ds_name, group in df.groupby("dataset_name"):
+        pairs = list(zip(group["check_type"], group["quality_score"], strict=False))
+        rows.append(
+            {
+                "dataset_name": ds_name,
+                "quality_score": dataset_quality_score(pairs, type_weights),
+                "anomaly_rate": _anomaly_rate(pairs),
+                "checks": len(group),
+            }
         )
-        .reset_index()
-    )
-    agg["quality_score"] = agg["quality_score"].round(2)
-    return agg.sort_values("dataset_name").reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values("dataset_name").reset_index(drop=True)
 
 
 def exception_queue(store: DuckDBStore, as_of: datetime, sla_days: int = 7) -> pd.DataFrame:

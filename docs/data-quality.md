@@ -12,7 +12,9 @@ Per spec §12, the per-dataset quality score is:
 \text{quality\_score} = 100 \times \frac{\text{checked} - \text{failing}}{\text{checked}}
 \]
 
-aggregated across check **types** (completeness, accuracy, consistency, timeliness, anomaly) with configurable per-type weights (default equal; anomaly weighted 0.5). Empty datasets score 100 (no failing records).
+aggregated across check **types** (completeness, accuracy, consistency, timeliness, anomaly) with configurable per-type weights (default equal). Empty datasets score 100 (no failing records).
+
+Anomaly checks are weighted **0.0** — excluded from the score entirely, not just down-weighted. A z-score/IQR check flags a small tail of records by construction, so its own per-check score sits near 100 regardless of data quality elsewhere; including it in the average would *inflate* the dataset score and risk masking a real completeness/accuracy failure, rather than protect against outliers "dominating" it. The exclusion mirrors exception routing, where anomaly checks already default to `route_failures: false` — anomalies are informational everywhere in this pipeline, not partially so. Instead, each dataset's anomaly failure rate is reported separately (`anomaly_rate` in the CLI summary and the dashboard's DQ table) via `civicpay.quality.scoring.anomaly_rate`, so the signal isn't lost — just kept out of the headline score.
 
 ## Check catalogue
 
@@ -40,7 +42,7 @@ Per-record failures are routed to the `exception_queue` (source = `dq`), capped 
 
 ```yaml
 type_weights:
-  anomaly: 0.5            # informational checks down-weighted
+  anomaly: 0.0            # excluded from the score; reported separately as anomaly_rate
 max_exceptions_per_check: 25
 datasets:
   transactions:
@@ -84,7 +86,7 @@ from civicpay.quality.pipeline import run_dq
 summary = run_dq(batch_id="DQ-001", as_of=as_of)
 # summary keys: batch_id, datasets_checked, checks_run, checks_passed,
 # checks_failed, total_failing_records, exceptions_routed, audit_events,
-# per_dataset_scores
+# per_dataset_scores, per_dataset_anomaly_rate
 ```
 
 ## Test results

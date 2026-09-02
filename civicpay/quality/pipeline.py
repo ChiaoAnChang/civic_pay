@@ -32,7 +32,7 @@ from civicpay.audit.ledger import AuditLedger
 from civicpay.data import models as M
 from civicpay.data.synthetic import AS_OF_DATETIME
 from civicpay.quality.checks import CheckResult, check_accuracy_referential, run_check
-from civicpay.quality.scoring import dataset_quality_score
+from civicpay.quality.scoring import anomaly_rate, dataset_quality_score
 from civicpay.storage.duckdb import DEFAULT_DB_PATH, DuckDBStore
 
 console = Console()
@@ -111,6 +111,7 @@ class QualityPipeline:
         exception_rows: list[dict[str, Any]] = []
         audit_events: list[dict[str, Any]] = []
         per_dataset_scores: dict[str, float] = {}
+        per_dataset_anomaly_rate: dict[str, float] = {}
         exc_seq = 0
 
         for ds_name, ds_cfg in datasets.items():
@@ -144,10 +145,15 @@ class QualityPipeline:
             all_results.extend(ds_results)
 
             # Per-dataset quality score (§12): check-type-weighted average.
+            # Anomaly checks are excluded by default (type_weights.anomaly:
+            # 0.0) and reported separately as an anomaly rate instead.
+            type_scores = [(r.check_type, r.quality_score) for r in ds_results]
             per_dataset_scores[ds_name] = dataset_quality_score(
-                [(r.check_type, r.quality_score) for r in ds_results],
-                self.config.type_weights,
+                type_scores, self.config.type_weights
             )
+            rate = anomaly_rate(type_scores)
+            if rate is not None:
+                per_dataset_anomaly_rate[ds_name] = rate
 
             # Route per-record failures to the exception queue (capped).
             for r in ds_results:
@@ -215,6 +221,7 @@ class QualityPipeline:
             "exceptions_routed": len(exception_rows),
             "audit_events": len(audit_events),
             "per_dataset_scores": per_dataset_scores,
+            "per_dataset_anomaly_rate": per_dataset_anomaly_rate,
         }
         self._print_summary(summary, all_results)
         return summary
@@ -272,8 +279,11 @@ class QualityPipeline:
                 f"{r.quality_score:.2f}",
             )
         table.add_section()
+        anomaly_rates = summary.get("per_dataset_anomaly_rate", {})
         for ds, score in summary["per_dataset_scores"].items():
             table.add_row(ds, "— dataset score —", "", "", "", f"{score:.2f}")
+            if ds in anomaly_rates:
+                table.add_row(ds, "— anomaly rate —", "anomaly", "", "", f"{anomaly_rates[ds]:.2f}")
         console.print(table)
         console.print(
             f"Checks: {summary['checks_run']} run, {summary['checks_passed']} passed, "

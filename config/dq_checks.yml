@@ -16,7 +16,12 @@ type_weights:
   accuracy: 1.0
   consistency: 1.0
   timeliness: 1.0
-  anomaly: 0.5   # informational; lower weight in the dataset score
+  anomaly: 0.0   # excluded from the score; reported separately as anomaly_rate.
+                 # Anomaly checks (z-score/IQR) flag a small tail of records by
+                 # construction, so their own score sits near 100 regardless of
+                 # data quality elsewhere — folding them into the average would
+                 # inflate the dataset score and mask real completeness/accuracy
+                 # failures, not protect against outliers "dominating" it.
 
 max_exceptions_per_check: 25
 
