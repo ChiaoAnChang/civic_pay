@@ -34,3 +34,12 @@ Python 3.11+ · DuckDB (embedded) · dbt (v0.2) · Streamlit · Faker · Typer �
 DuckDB is embedded (in-process, file-based). No cloud account or DBA required —
 critical for adoption by under-resourced institutions. The reference
 implementation runs entirely on synthetic data.
+
+## Module status (v0.1)
+
+| Module | Status | Docs |
+| --- | --- | --- |
+| Synthetic data + schemas | Implemented | — |
+| DuckDB storage layer | Implemented | — |
+| Payment reconciliation + audit-ledger core | Implemented | [reconciliation.md](reconciliation.md) |
+| Data-quality, exception workflow, audit verify/export, dashboard, dbt | Planned | — |

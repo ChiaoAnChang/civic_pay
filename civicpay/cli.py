@@ -1,7 +1,8 @@
 """CivicPay Open Framework command-line interface (Typer).
 
-Only the ``seed`` command is implemented in v0.1. Subsequent tickets add
-``ingest``, ``recon``, ``dq``, ``exception``, ``audit``, and ``dashboard``.
+Implements ``seed`` (synthetic data) and ``recon run`` (payment reconciliation).
+Subsequent tickets add ``ingest``, ``dq``, ``exception``, ``audit``, and
+``dashboard``.
 """
 
 from __future__ import annotations
@@ -13,7 +14,8 @@ from rich.console import Console
 from rich.table import Table
 
 from civicpay.data import models as M
-from civicpay.data.synthetic import generate_all
+from civicpay.data.synthetic import AS_OF_DATE, generate_all
+from civicpay.recon.pipeline import run_recon
 from civicpay.storage.duckdb import DEFAULT_DB_PATH, DuckDBStore
 
 app = typer.Typer(
@@ -94,6 +96,54 @@ def seed(
     console.print(table)
     console.print(f"[green]Done.[/] DuckDB at {db_path}")
     store.close()
+
+
+recon_app = typer.Typer(name="recon", help="Payment reconciliation.", no_args_is_help=True)
+app.add_typer(recon_app)
+
+
+@recon_app.command("run")
+def recon_run(
+    file: str = typer.Option(None, help="Optional payment CSV to ingest before reconciling."),
+    file_id: str = typer.Option(None, help="Reconcile only this payment file id."),
+    date: str = typer.Option(str(AS_OF_DATE), help="As-of date (YYYY-MM-DD) for stale detection."),
+    batch_id: str = typer.Option("BATCH-001", help="Reconciliation batch id."),
+    db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
+    config: str = typer.Option("config/recon.yml", help="Reconciliation config YAML."),
+) -> None:
+    """Run payment reconciliation against the ledger in DuckDB.
+
+    Reads ``payment_records`` and ``transactions`` from DuckDB, matches every
+    payment, writes ``reconciliation_results`` (including unmatched ledger
+    rows), emits tamper-evident audit events, and prints a summary.
+    """
+    from datetime import datetime
+
+    from civicpay.data.synthetic import AS_OF_DATETIME
+
+    as_of = (
+        datetime.fromisoformat(date).replace(tzinfo=AS_OF_DATETIME.tzinfo)
+        if date
+        else AS_OF_DATETIME
+    )
+    # Optionally ingest a payment CSV into payment_records first.
+    if file:
+        import pandas as pd
+
+        store = DuckDBStore(db_path)
+        store.init_schema()
+        df = pd.read_csv(file)
+        store.write_dataframe(M.PaymentRecord.TABLE, df, mode="replace")
+        console.print(f"  ingested {len(df):,} payment records from {file}")
+        store.close()
+    summary = run_recon(
+        db_path=db_path,
+        config_path=config,
+        batch_id=batch_id,
+        file_id=file_id,
+        as_of=as_of,
+    )
+    console.print(f"[green]Done.[/] Reconciliation batch {summary['batch_id']}")
 
 
 if __name__ == "__main__":

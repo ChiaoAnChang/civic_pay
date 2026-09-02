@@ -1,0 +1,25 @@
+# CivicPay Open Framework — reconciliation configuration (spec §14.1)
+#
+# These thresholds govern payment-to-ledger matching. Defaults are calibrated
+# against the synthetic sample payment file (seed=42) so every outcome class is
+# exercised. Real institutions should tune these to their own tolerance policy.
+
+# Maximum |payment.amount - ledger.amount| (in the payment currency's units)
+# for two records to be considered an amount match (used for both exact and
+# fuzzy matching — a fuzzy match still requires the amount and date to agree
+# within tolerance; only the reference id is allowed to be garbled).
+amount_tolerance: 1.0
+
+# Maximum |payment.date - ledger.posting_date| in days for an exact or fuzzy
+# match. A window of 1 allows same-day or next-day posting.
+date_window_days: 1
+
+# Minimum normalized Levenshtein similarity (0..1) between a payment reference
+# and a ledger reference for a fuzzy match. 0.85 catches single-character
+# transpositions and visual-similar substitutions while avoiding false matches.
+fuzzy_threshold: 0.85
+
+# An unmatched payment older than this many days (relative to the as-of date) is
+# escalated from unmatched_payment to an exception (reason: stale), so it is not
+# silently dropped. 30 days matches a monthly close cadence.
+stale_days: 30

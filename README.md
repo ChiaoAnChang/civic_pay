@@ -41,9 +41,16 @@ civicpay seed --seed 42
 
 # (Or write raw CSV/Parquet only, without loading)
 civicpay seed --seed 42 --files-only
+
+# Run payment reconciliation against the ledger (writes reconciliation_results
+# + tamper-evident audit events, prints an outcome summary)
+civicpay recon run
 ```
 
-See [docs/architecture.md](docs/architecture.md) and [docs/methodology.md](docs/methodology.md) for design details.
+See [docs/reconciliation.md](docs/reconciliation.md) for the reconciliation
+module's full technical documentation (algorithm, data model, configuration,
+API, and operational behavior). See [docs/architecture.md](docs/architecture.md)
+and [docs/methodology.md](docs/methodology.md) for the overall design.
 
 ## Clean-room provenance
 
