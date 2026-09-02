@@ -98,9 +98,14 @@ def exception_queue(store: DuckDBStore, as_of: datetime, sla_days: int = 7) -> p
 
 
 def recent_audit_events(store: DuckDBStore, limit: int = 100) -> pd.DataFrame:
-    """Most recent audit events (for the audit-events view)."""
-    df = store.read_table(M.AuditEvent.TABLE, limit=limit)
-    if df.empty:
-        return df
-    cols = ["event_id", "timestamp", "event_type", "actor", "entity_type", "entity_id", "action"]
-    return df[cols].sort_values("timestamp", ascending=False).reset_index(drop=True)
+    """Most recent audit events (for the audit-events view).
+
+    Orders by timestamp descending in SQL before limiting, so we get the truly
+    most recent events (not just the first ``limit`` rows by insertion order).
+    """
+    df = store.query(
+        f"SELECT event_id, timestamp, event_type, actor, entity_type, entity_id, action "
+        f"FROM {M.AuditEvent.TABLE} ORDER BY timestamp DESC, event_id DESC LIMIT ?",
+        [limit],
+    )
+    return df

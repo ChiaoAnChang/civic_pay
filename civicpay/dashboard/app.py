@@ -89,7 +89,7 @@ def render(store: DuckDBStore | None = None, as_of=None) -> None:  # noqa: ANN00
     # -- Audit log ------------------------------------------------------- #
     st.header("Recent Audit Events")
     verification = verify_chain(store)
-    v_color = "🟢 verified" if verification["verified"] else "🔴 BROKEN"
+    v_color = "verified" if verification["verified"] else "BROKEN"
     st.caption(f"Audit chain: {v_color} — {verification['event_count']} event(s)")
     events = recent_audit_events(store, limit=100)
     if not events.empty:
@@ -120,3 +120,7 @@ def run_streamlit_app(target: str | None = None) -> int:
         check=False,
     )
     return proc.returncode
+
+
+if __name__ == "__main__":
+    render()

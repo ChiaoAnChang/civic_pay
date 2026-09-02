@@ -23,6 +23,28 @@ pre-commit install  # optional
 4. Update `PROVENANCE.md` if you introduced a new design input.
 5. Open a pull request describing the change and its provenance.
 
+## Ticket roadmap
+
+Work is organized into tickets defined in the project charter
+(`CivicPay_Open_Framework_Spec.md` §17). Current status:
+
+| Ticket | Scope | Status |
+| --- | --- | --- |
+| 1 | Repo scaffold & governance docs | Done |
+| 2 | Schemas & synthetic data | Done |
+| 3 | DuckDB storage layer | Done |
+| 4 | Reconciliation matcher | Done |
+| 5 | Data-quality module | Done |
+| 6 | Exception workflow | Done |
+| 7 | Audit-evidence layer | Done |
+| 8 | Streamlit dashboard | Done |
+| 10 | CLI wiring & end-to-end | Done |
+| 11 | README & usage docs | Done |
+| 9 | dbt analytical marts | Deferred (v0.2) |
+| 12 | First release | Pending |
+
+See `OPEN_QUESTIONS.md` for open design questions to resolve before release.
+
 ## Code style
 
 - Python 3.11+. Run `ruff format` before committing.

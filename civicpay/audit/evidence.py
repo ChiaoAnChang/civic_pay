@@ -55,14 +55,19 @@ def verify_chain(store: DuckDBStore, batch_id: str | None = None) -> dict[str, A
     for e in events:
         successor.setdefault(e["previous_hash"] or "", []).append(e)
 
-    # genesis: previous_hash empty, or pointing outside this event set (batch
-    # boundary — the first event of a filtered batch legitimately points at a
-    # prior batch's last event).
-    genesis = [
-        e
-        for e in events
-        if (e["previous_hash"] or "") == "" or (e["previous_hash"] or "") not in hashes
-    ]
+    # genesis: the first event of a chain. For a full-chain verification
+    # (batch_id is None) the genesis must have an empty previous_hash. For a
+    # batch-filtered verification, the first event legitimately points at a prior
+    # batch's hash (a boundary), so we also allow previous_hash to reference a
+    # hash outside the filtered event set.
+    if batch_id is None:
+        genesis = [e for e in events if (e["previous_hash"] or "") == ""]
+    else:
+        genesis = [
+            e
+            for e in events
+            if (e["previous_hash"] or "") == "" or (e["previous_hash"] or "") not in hashes
+        ]
 
     broken: dict[str, Any] | None = None
     if len(genesis) != 1:

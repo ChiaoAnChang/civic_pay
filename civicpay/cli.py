@@ -321,8 +321,17 @@ def run_all(
     db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
     seed: bool = typer.Option(True, help="Seed synthetic data first (use --no-seed to skip)."),
     date: str = typer.Option(str(AS_OF_DATE), help="As-of date (YYYY-MM-DD)."),
+    run_id: str = typer.Option(
+        "RUNALL", help="Prefix for recon/DQ batch ids (use a fresh one per run)."
+    ),
 ) -> None:
-    """End-to-end: seed -> reconcile -> DQ -> exception list -> audit verify."""
+    """End-to-end: seed -> reconcile -> DQ -> exception list -> audit verify.
+
+    Each stage uses a batch id derived from ``--run-id`` (e.g. ``RUNALL-RECON``,
+    ``RUNALL-DQ``). Because the audit log and exception queue are append-only,
+    re-running on the same database with the same ``--run-id`` collides on primary
+    keys — pass a fresh ``--run-id`` (or a fresh ``--db-path``) for each run.
+    """
     from datetime import datetime
 
     from civicpay.data.synthetic import AS_OF_DATETIME
@@ -353,7 +362,7 @@ def run_all(
             stages.append(("seed", "skipped", "--no-seed"))
 
         # 2. Reconcile.
-        recon = run_recon(db_path=db_path, batch_id="RUNALL-RECON", as_of=as_of)
+        recon = run_recon(db_path=db_path, batch_id=f"{run_id}-RECON", as_of=as_of)
         stages.append(
             (
                 "reconcile",
@@ -363,7 +372,7 @@ def run_all(
         )
 
         # 3. Data quality.
-        dq = run_dq(db_path=db_path, batch_id="RUNALL-DQ", as_of=as_of)
+        dq = run_dq(db_path=db_path, batch_id=f"{run_id}-DQ", as_of=as_of)
         scores = dq["per_dataset_scores"]
         stages.append(
             (

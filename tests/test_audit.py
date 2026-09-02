@@ -73,6 +73,18 @@ def test_verify_detects_tampered_field(ledger_store):
     assert report["broken_event"]["reason"] == "content_hash_mismatch"
 
 
+def test_verify_full_chain_rejects_deleted_first_event(ledger_store):
+    """Deleting the genesis event of a full chain must fail verification."""
+    _seed_chain(ledger_store, batch_id="AUD1", n=5)
+    ledger_store.conn.execute(
+        f"DELETE FROM {M.AuditEvent.TABLE} WHERE event_id = 'EVT-AUD1-000001'"
+    )
+    report = verify_chain(ledger_store, batch_id=None)
+    assert report["verified"] is False
+    # Deleting the genesis leaves no event with an empty previous_hash.
+    assert report["broken_event"]["reason"] == "no_genesis"
+
+
 def test_verify_detects_deleted_event(ledger_store):
     _seed_chain(ledger_store, batch_id="AUD1", n=5)
     # Delete a middle event -> event 4's previous_hash now points at a hash that

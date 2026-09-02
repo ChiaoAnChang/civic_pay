@@ -42,4 +42,10 @@ implementation runs entirely on synthetic data.
 | Synthetic data + schemas | Implemented | — |
 | DuckDB storage layer | Implemented | — |
 | Payment reconciliation + audit-ledger core | Implemented | [reconciliation.md](reconciliation.md) |
-| Data-quality, exception workflow, audit verify/export, dashboard, dbt | Planned | — |
+| Data-quality monitoring | Implemented | [data-quality.md](data-quality.md) |
+| Exception workflow (priority + SLA aging) | Implemented | — |
+| Audit-evidence layer (verify + export) | Implemented | — |
+| Streamlit dashboard | Implemented | — |
+| CLI wiring + end-to-end (`run-all`) | Implemented | — |
+| PyPI packaging + install CI | Implemented | — |
+| dbt analytical marts | Deferred (v0.2) | — |
