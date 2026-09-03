@@ -7,8 +7,14 @@ Two capabilities on top of the hash-chained ledger:
   tampering (a stored field was altered without recomputing the hash) and chain
   breakage (an event was inserted, deleted, or reordered).
 * :func:`export_evidence` — bundle a batch's audit events, the verification
-  report, and the reconciliation rows backing the batch's claims into a single
-  structured JSON evidence package.
+  report, and the batch's backing rows into a single structured JSON evidence
+  package. Every batch gets both a reconciliation section and an exception
+  section (a batch may legitimately populate only one of them) rather than
+  requiring the caller to already know and correctly state which kind of
+  batch they're exporting — see the function's docstring for why a
+  ``--mode recon|dq`` split (the original design) isn't viable: ``dq_results``
+  carries no batch identity and is replaced (not appended) per run, so it
+  can't be exported per-batch at all without a schema change.
 """
 
 from __future__ import annotations
@@ -53,6 +59,23 @@ class BatchIdAlreadyUsedError(ValueError):
             f"The audit log is append-only (tamper-evident), so re-running with "
             f"the same batch_id collides on primary keys. Use a fresh "
             f"--batch-id (or --run-id for 'civicpay run-all') for each run."
+        )
+
+
+class UnknownBatchIdError(ValueError):
+    """Raised when exporting evidence for a batch_id with zero audit events.
+
+    Without this guard, a mistyped or nonexistent batch_id silently produced a
+    structurally valid, empty, ``verified: true`` evidence package — nothing
+    distinguished "this batch genuinely has no activity" from "you got the
+    batch id wrong." Fail loudly instead.
+    """
+
+    def __init__(self, batch_id: str) -> None:
+        self.batch_id = batch_id
+        super().__init__(
+            f"No audit events found for batch_id '{batch_id}' — nothing to export. "
+            f"Check the batch id, e.g. via 'civicpay audit verify --batch {batch_id}'."
         )
 
 
@@ -148,32 +171,89 @@ def _recon_summary(recon: pd.DataFrame) -> dict[str, int]:
     return {"total": total, "matched": matched, "exceptions": total - matched}
 
 
+def _exceptions_for_batch(store: DuckDBStore, batch_id: str) -> pd.DataFrame:
+    """Read exception_queue rows opened by this batch (dash-delimited prefix,
+    same technique as ``_rows_for_batch`` for audit events)."""
+    df = store.read_table(M.ExceptionItem.TABLE)
+    prefix = f"EXC-{batch_id}-"
+    df = df[df["exception_id"].astype(str).str.startswith(prefix)]
+    return df.sort_values("exception_id").reset_index(drop=True)
+
+
+def _exception_summary(exceptions: pd.DataFrame) -> dict[str, int]:
+    if exceptions.empty:
+        return {"total": 0, "open": 0, "in_progress": 0, "resolved": 0}
+    counts = exceptions["status"].value_counts()
+    return {
+        "total": int(len(exceptions)),
+        "open": int(counts.get(M.ExceptionStatus.OPEN, 0)),
+        "in_progress": int(counts.get(M.ExceptionStatus.IN_PROGRESS, 0)),
+        "resolved": int(counts.get(M.ExceptionStatus.RESOLVED, 0)),
+    }
+
+
 def export_evidence(
     store: DuckDBStore,
     batch_id: str,
     out_path: str | Path | None = None,
+    full: bool = False,
 ) -> dict[str, Any]:
     """Build (and optionally persist) the tamper-evident evidence package.
 
-    The package contains: the verification report, the batch's audit events (with
-    their hashes), and the reconciliation rows backing the batch's claims.
+    Every batch gets both a reconciliation section and an exception section —
+    a recon batch typically populates only the former, a DQ batch only the
+    latter, and that's fine; both are queried the same way regardless of
+    which kind of batch was passed, so there's no ``--mode`` to get wrong.
+    (``dq_results`` itself carries no batch identity and is replaced, not
+    appended, per run — see the module docstring — so it isn't exportable
+    per-batch; ``exception_queue``, which is batch-scoped and append-only,
+    carries the real batch-level DQ story instead.)
+
+    ``full=False`` (the default) omits the full ``reconciliation_results``
+    rows, which can run into the tens of thousands for a large batch — only
+    ``reconciliation_summary`` (counts) is included. Pass ``full=True`` for
+    the complete backing rows. Exception rows are always included in full:
+    they're already bounded by ``max_exceptions_per_check`` at routing time,
+    so they don't have the same size problem.
+
+    Raises :class:`UnknownBatchIdError` if the batch has zero audit events —
+    a mistyped batch_id would otherwise silently export an empty, structurally
+    valid, "verified" package with nothing to flag it as likely wrong.
     """
     verification = verify_chain(store, batch_id)
+    if verification["event_count"] == 0:
+        raise UnknownBatchIdError(batch_id)
     audit_events = _rows_for_batch(store, batch_id)
 
     recon = store.query(
         f"SELECT * FROM {M.ReconciliationResult.TABLE} WHERE batch_id = ?",
         [batch_id],
     )
-    summary = _recon_summary(recon)
+    exceptions = _exceptions_for_batch(store, batch_id)
+
+    scope = {
+        "audit_events_rows": int(len(audit_events)),
+        "reconciliation_results_rows": int(len(recon)),
+        "reconciliation_results_included": full,
+        "exception_rows": int(len(exceptions)),
+        # A deterministic anchor alongside the wall-clock exported_at below:
+        # the actual as-of range this batch's events were recorded at.
+        "event_timestamp_range": [
+            str(audit_events["timestamp"].min()),
+            str(audit_events["timestamp"].max()),
+        ],
+    }
 
     package = {
         "batch_id": batch_id,
         "exported_at": datetime.now(UTC).isoformat(),
+        "scope": scope,
         "verification": verification,
-        "audit_events": audit_events.drop(columns=[]).to_dict(orient="records"),
-        "reconciliation_summary": summary,
-        "reconciliation_results": recon.to_dict(orient="records"),
+        "audit_events": audit_events.to_dict(orient="records"),
+        "reconciliation_summary": _recon_summary(recon),
+        "reconciliation_results": recon.to_dict(orient="records") if full else [],
+        "exception_summary": _exception_summary(exceptions),
+        "exceptions": exceptions.to_dict(orient="records"),
     }
 
     if out_path is not None:

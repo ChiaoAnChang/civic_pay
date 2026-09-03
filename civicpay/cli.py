@@ -310,21 +310,30 @@ def audit_verify(
 
 @audit_app.command("export")
 def audit_export(
-    batch: str = typer.Option(..., help="Recon batch id to export."),
+    batch: str = typer.Option(..., help="Batch id to export (recon or DQ)."),
     out: str = typer.Option("evidence.json", help="Output JSON path."),
+    full: bool = typer.Option(
+        False, help="Include full reconciliation_results rows (can be very large)."
+    ),
     db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
 ) -> None:
     """Export the tamper-evident evidence package as structured JSON."""
-    from civicpay.audit.evidence import export_evidence
+    from civicpay.audit.evidence import UnknownBatchIdError, export_evidence
 
     store = DuckDBStore(db_path)
-    pkg = export_evidence(store, batch_id=batch, out_path=out)
-    store.close()
+    try:
+        pkg = export_evidence(store, batch_id=batch, out_path=out, full=full)
+    except UnknownBatchIdError as e:
+        console.print(f"[red]Export failed:[/] {e}")
+        raise typer.Exit(code=1) from e
+    finally:
+        store.close()
     v = pkg["verification"]
     console.print(
         f"[green]Exported.[/] {out} — batch {batch}: "
         f"{v['event_count']} audit events, verification={'verified' if v['verified'] else 'broken'}, "
-        f"recon summary={pkg['reconciliation_summary']}"
+        f"recon summary={pkg['reconciliation_summary']}, "
+        f"exception summary={pkg['exception_summary']}"
     )
 
 

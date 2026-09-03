@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from civicpay.audit.evidence import export_evidence, verify_chain
+from civicpay.audit.evidence import UnknownBatchIdError, export_evidence, verify_chain
 from civicpay.audit.ledger import AuditLedger
 from civicpay.data import models as M
 from civicpay.data.synthetic import AS_OF_DATETIME
@@ -154,16 +154,23 @@ def test_export_package_is_well_formed(ledger_store, tmp_path):
     assert set(pkg.keys()) == {
         "batch_id",
         "exported_at",
+        "scope",
         "verification",
         "audit_events",
         "reconciliation_summary",
         "reconciliation_results",
+        "exception_summary",
+        "exceptions",
     }
     assert pkg["batch_id"] == "AUD1"
     assert pkg["verification"]["verified"] is True
     assert pkg["verification"]["event_count"] == 4
     assert len(pkg["audit_events"]) == 4
     assert pkg["reconciliation_summary"] == {"total": 0, "matched": 0, "exceptions": 0}
+    assert pkg["exception_summary"] == {"total": 0, "open": 0, "in_progress": 0, "resolved": 0}
+    assert pkg["exceptions"] == []
+    assert pkg["scope"]["audit_events_rows"] == 4
+    assert pkg["scope"]["reconciliation_results_included"] is False
     # Event rows carry the hash fields.
     ev = pkg["audit_events"][0]
     assert "event_hash" in ev and "previous_hash" in ev
@@ -197,8 +204,112 @@ def test_export_includes_reconciliation_backing_rows():
         mode="replace",
     )
     ReconciliationPipeline(store=store).run(batch_id="AUDX")
-    pkg = export_evidence(store, batch_id="AUDX")
-    assert pkg["verification"]["verified"] is True
-    assert pkg["reconciliation_summary"]["total"] > 0
-    assert pkg["reconciliation_summary"]["total"] == len(pkg["reconciliation_results"])
+
+    # Default (full=False): summary is populated but full rows are omitted.
+    default_pkg = export_evidence(store, batch_id="AUDX")
+    assert default_pkg["reconciliation_summary"]["total"] > 0
+    assert default_pkg["reconciliation_results"] == []
+    assert default_pkg["scope"]["reconciliation_results_included"] is False
+
+    # full=True: the complete backing rows are attached.
+    full_pkg = export_evidence(store, batch_id="AUDX", full=True)
+    assert full_pkg["verification"]["verified"] is True
+    assert full_pkg["reconciliation_summary"]["total"] > 0
+    assert full_pkg["reconciliation_summary"]["total"] == len(full_pkg["reconciliation_results"])
+    assert full_pkg["scope"]["reconciliation_results_included"] is True
     store.close()
+
+
+def test_export_includes_exception_backlog_and_summary():
+    # End-to-end: a DQ batch has no reconciliation_results (that table carries
+    # no DQ activity at all), but its exception_queue rows are still exported
+    # and summarized -- this is the whole point of dropping the --mode idea.
+    from civicpay.data.synthetic import generate_all
+    from civicpay.quality.pipeline import QualityPipeline
+
+    store = DuckDBStore(":memory:")
+    store.init_schema()
+    data = generate_all(seed=42, volumes={"customers": 500, "accounts": 200, "transactions": 2000})
+    store.write_many(data, mode="replace")
+    QualityPipeline(store=store).run(batch_id="AUDY")
+
+    pkg = export_evidence(store, batch_id="AUDY")
+    assert pkg["verification"]["verified"] is True
+    assert pkg["reconciliation_summary"] == {"total": 0, "matched": 0, "exceptions": 0}
+    assert pkg["exception_summary"]["total"] > 0
+    assert pkg["exception_summary"]["total"] == len(pkg["exceptions"])
+    assert all(e["exception_id"].startswith("EXC-AUDY-") for e in pkg["exceptions"])
+    store.close()
+
+
+def test_export_unknown_batch_id_raises(ledger_store):
+    with pytest.raises(UnknownBatchIdError, match="No audit events found"):
+        export_evidence(ledger_store, batch_id="NOPE")
+
+
+# --------------------------------------------------------------------------- #
+# CLI wiring: civicpay audit export
+# --------------------------------------------------------------------------- #
+
+
+def test_cli_audit_export_default_omits_full_rows_and_flag_includes_them(tmp_path):
+    from civicpay.cli import app
+    from civicpay.data.synthetic import generate_all
+    from civicpay.recon.pipeline import ReconciliationPipeline
+    from typer.testing import CliRunner
+
+    db = tmp_path / "cli-export.duckdb"
+    store = DuckDBStore(str(db))
+    store.init_schema()
+    data = generate_all(seed=7, volumes={"customers": 50, "accounts": 30, "transactions": 300})
+    store.write_many(
+        {M.PaymentRecord.TABLE: data["payment_records"], M.Transaction.TABLE: data["transactions"]},
+        mode="replace",
+    )
+    ReconciliationPipeline(store=store).run(batch_id="CLIX")
+    store.close()
+
+    runner = CliRunner()
+    out = tmp_path / "evidence.json"
+    result = runner.invoke(
+        app, ["audit", "export", "--batch", "CLIX", "--out", str(out), "--db-path", str(db)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "exception summary" in result.output
+    pkg = json.loads(out.read_text(encoding="utf-8"))
+    assert pkg["reconciliation_results"] == []  # default full=False
+    assert pkg["reconciliation_summary"]["total"] > 0
+
+    out_full = tmp_path / "evidence-full.json"
+    result_full = runner.invoke(
+        app,
+        [
+            "audit",
+            "export",
+            "--batch",
+            "CLIX",
+            "--out",
+            str(out_full),
+            "--full",
+            "--db-path",
+            str(db),
+        ],
+    )
+    assert result_full.exit_code == 0, result_full.output
+    pkg_full = json.loads(out_full.read_text(encoding="utf-8"))
+    assert len(pkg_full["reconciliation_results"]) == pkg_full["reconciliation_summary"]["total"]
+
+
+def test_cli_audit_export_unknown_batch_exits_nonzero(tmp_path):
+    from civicpay.cli import app
+    from typer.testing import CliRunner
+
+    db = tmp_path / "cli-empty.duckdb"
+    store = DuckDBStore(str(db))
+    store.init_schema()
+    store.close()
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["audit", "export", "--batch", "NOPE", "--db-path", str(db)])
+    assert result.exit_code == 1
+    assert "No audit events found" in result.output
