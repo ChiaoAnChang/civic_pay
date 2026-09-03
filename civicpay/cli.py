@@ -94,6 +94,7 @@ def seed(
         M.Transaction.TABLE,
         M.PaymentFile.TABLE,
         M.PaymentRecord.TABLE,
+        M.PendingEnrollment.TABLE,
     ]:
         table.add_row(t, f"{store.table_count(t):,}")
     console.print(table)
@@ -284,6 +285,42 @@ def exception_resolve(
     )
 
 
+enroll_app = typer.Typer(name="enroll", help="Enrollment & validation (Ticket 13).", no_args_is_help=True)
+app.add_typer(enroll_app)
+
+
+@enroll_app.command("validate")
+def enroll_validate(
+    file: str = typer.Option(
+        None, help="CSV of candidate enrollments to validate (default: seeded pending_enrollments)."
+    ),
+    rules: str = typer.Option("config/enrollment_rules.yml", help="Enrollment rules YAML."),
+    db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
+    date: str = typer.Option(str(AS_OF_DATE), help="As-of date (YYYY-MM-DD)."),
+) -> None:
+    """Validate enrollment candidates and run the dual-source agreement gate.
+
+    Reads either ``--file`` (an external CSV) or the seeded
+    ``pending_enrollments`` table (default). Each candidate is validated,
+    then — if valid — evaluated by two independent calculation paths;
+    agreement writes to ``accepted_enrollments``, disagreement routes to the
+    exception queue for human review (``civicpay exception list/resolve``).
+    Already-processed records (by enrollment id) are skipped, not
+    reprocessed, so re-running is safe.
+    """
+    from datetime import datetime
+
+    from civicpay.data.synthetic import AS_OF_DATETIME
+    from civicpay.enrollment.pipeline import run_enrollment_validate
+
+    as_of = (
+        datetime.fromisoformat(date).replace(tzinfo=AS_OF_DATETIME.tzinfo)
+        if date
+        else AS_OF_DATETIME
+    )
+    run_enrollment_validate(db_path=db_path, file_path=file, rules_path=rules, as_of=as_of)
+
+
 audit_app = typer.Typer(name="audit", help="Audit-evidence layer.", no_args_is_help=True)
 app.add_typer(audit_app)
 
@@ -386,6 +423,7 @@ def run_all(
                 M.Transaction.TABLE,
                 M.PaymentFile.TABLE,
                 M.PaymentRecord.TABLE,
+                M.PendingEnrollment.TABLE,
             ]:
                 store.write_dataframe(table, data[table], mode="replace")
             stages.append(("seed", "ok", f"{sum(len(data[t]) for t in data)} rows"))
@@ -414,7 +452,23 @@ def run_all(
             )
         )
 
-        # 4. Exception queue.
+        # 4. Enrollment validation + dual-source gate (Ticket 13). Each
+        # enrollment is its own logical batch (ENR-{enrollment_id}), so unlike
+        # recon/DQ there is no derived run_id batch to pre-flight-check here.
+        from civicpay.enrollment.pipeline import EnrollmentPipeline
+
+        enroll = EnrollmentPipeline(store=store, as_of=as_of).run()
+        stages.append(
+            (
+                "enrollment",
+                "ok",
+                f"{enroll['accepted']} accepted, {enroll['mismatch']} mismatch, "
+                f"{enroll['rejected']} rejected, {enroll['skipped']} skipped "
+                f"(backlog seeded: {enroll['backlog_seeded']})",
+            )
+        )
+
+        # 5. Exception queue.
         items = ExceptionManager(store=store, as_of=as_of).list()
         if items:
             stages.append(
@@ -427,7 +481,7 @@ def run_all(
         else:
             stages.append(("exception-list", "ok", "0 items"))
 
-        # 5. Audit verify.
+        # 6. Audit verify.
         report = verify_chain(store)
         stages.append(
             (

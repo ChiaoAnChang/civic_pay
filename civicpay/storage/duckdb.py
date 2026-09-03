@@ -167,6 +167,47 @@ SCHEMA_DDL: dict[str, str] = {
             event_hash          VARCHAR
         )
     """,
+    M.PendingEnrollment.TABLE: """
+        CREATE TABLE IF NOT EXISTS pending_enrollments (
+            enrollment_id       VARCHAR PRIMARY KEY,
+            entity_id           VARCHAR,
+            program_code        VARCHAR,
+            enrollment_date     TIMESTAMP,
+            incentive_amount    VARCHAR,
+            term_months         VARCHAR,
+            region              VARCHAR,
+            submitted_by        VARCHAR,
+            status              VARCHAR,
+            created_at          TIMESTAMP
+        )
+    """,
+    M.AcceptedEnrollment.TABLE: """
+        CREATE TABLE IF NOT EXISTS accepted_enrollments (
+            enrollment_id       VARCHAR PRIMARY KEY,
+            entity_id           VARCHAR,
+            program_code        VARCHAR,
+            enrollment_date     TIMESTAMP,
+            incentive_amount    DOUBLE,
+            term_months         INTEGER,
+            region              VARCHAR,
+            submitted_by        VARCHAR,
+            expected_payout     DOUBLE,
+            accepted_at         TIMESTAMP,
+            batch_id            VARCHAR
+        )
+    """,
+    M.DualSourceResult.TABLE: """
+        CREATE TABLE IF NOT EXISTS enrollment_dual_source_results (
+            result_id           VARCHAR PRIMARY KEY,
+            enrollment_id       VARCHAR,
+            method_a_amount     DOUBLE,
+            method_b_amount     DOUBLE,
+            delta               DOUBLE,
+            tolerance           DOUBLE,
+            agreed              BOOLEAN,
+            evaluated_at        TIMESTAMP
+        )
+    """,
 }
 
 # Tables that should be overwritten (not appended) during a fresh seed.
@@ -176,6 +217,7 @@ SEED_TABLES = [
     M.Transaction.TABLE,
     M.PaymentFile.TABLE,
     M.PaymentRecord.TABLE,
+    M.PendingEnrollment.TABLE,
 ]
 
 

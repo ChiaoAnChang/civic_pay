@@ -25,10 +25,15 @@ from civicpay.exceptions.workflow import (
 )
 from civicpay.storage.duckdb import DuckDBStore
 
-# Datasets whose records carry a dollar ``amount`` (for at-risk computation).
-_AMOUNT_DATASETS = {
-    "transactions": "transaction_id",
-    "payment_records": "payment_id",
+# Datasets whose records carry a dollar amount (for at-risk computation):
+# dataset name -> (table, id_field, amount_field). ``amount_field`` may be
+# text (e.g. pending_enrollments.incentive_amount is unvalidated intake data,
+# stored as VARCHAR — see that table's docstring) so the lookup always coerces
+# via ``float()`` rather than assuming a numeric column.
+_AMOUNT_DATASETS: dict[str, tuple[str, str, str]] = {
+    "transactions": (M.Transaction.TABLE, "transaction_id", "amount"),
+    "payment_records": (M.PaymentRecord.TABLE, "payment_id", "amount"),
+    "pending_enrollments": (M.PendingEnrollment.TABLE, "enrollment_id", "incentive_amount"),
 }
 
 
@@ -46,22 +51,23 @@ class ExceptionManager:
         if not reference_id or ":" not in reference_id:
             return 0.0
         dataset, rid = reference_id.split(":", 1)
-        id_field = _AMOUNT_DATASETS.get(dataset)
-        if not id_field:
+        entry = _AMOUNT_DATASETS.get(dataset)
+        if not entry:
             return 0.0
-        table = {"transactions": M.Transaction.TABLE, "payment_records": M.PaymentRecord.TABLE}[
-            dataset
-        ]
+        table, id_field, amount_field = entry
         try:
             df = self.store.read_table(table)
         except Exception:
             return 0.0
-        if df.empty or id_field not in df.columns or "amount" not in df.columns:
+        if df.empty or id_field not in df.columns or amount_field not in df.columns:
             return 0.0
         match = df[df[id_field].astype(str) == rid]
         if match.empty:
             return 0.0
-        return float(match["amount"].iloc[0])
+        try:
+            return float(match[amount_field].iloc[0])
+        except (TypeError, ValueError):
+            return 0.0
 
     def list(
         self,

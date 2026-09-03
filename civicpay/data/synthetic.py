@@ -50,6 +50,135 @@ BUCKET_AMOUNT_MISMATCH = 10
 # reconciliation outcome counts are unaffected.
 _PAYMENT_POOL_SIZE = BUCKET_EXACT + BUCKET_FUZZY + BUCKET_AMOUNT_MISMATCH
 
+# Enrollment candidate generation (Ticket 13). Program definitions are
+# original synthetic values for the demo — not derived from, and not matched
+# to, any real incentive/rebate program.
+ENROLLMENT_PROGRAMS: dict[str, dict[str, Any]] = {
+    "STARTER": {"max_incentive_amount": 5_000, "term_months": (1, 12)},
+    "GROWTH": {"max_incentive_amount": 25_000, "term_months": (6, 36)},
+    "ENTERPRISE": {"max_incentive_amount": 100_000, "term_months": (12, 60)},
+}
+ENROLLMENT_REGIONS = ["NORTHEAST", "SOUTHEAST", "MIDWEST", "SOUTHWEST", "WEST"]
+MIN_ENROLLMENT_DATE = date(2020, 1, 1)
+
+# Deliberately-defective cohort sizes (Ticket 13 §3 / DoD #2) — small, fixed
+# counts so validators have a known set of each defect class to catch:
+# bad_date (outside the allowed range), out_of_range_amount, duplicate
+# entity_id, stray-space numeric (a value that survives .strip() but still
+# isn't parseable, e.g. an embedded space), and missing required.
+_ENROLLMENT_DEFECT_COUNTS: dict[str, int] = {
+    "bad_date": 5,
+    "out_of_range_amount": 5,
+    "duplicate_entity_id": 5,
+    "stray_space": 5,
+    "missing_required": 5,
+}
+
+
+def _stray_space_number(value: float) -> str:
+    """A numeric string with an embedded space that survives ``.strip()``.
+
+    E.g. ``1500.00`` -> ``"150 0.00"`` — leading/trailing strip does not fix
+    it, so it correctly fails ``float()`` parsing (a realistic fat-finger
+    defect, not merely cosmetic whitespace).
+    """
+    s = f"{value:.2f}"
+    mid = len(s) // 2
+    return s[:mid] + " " + s[mid:]
+
+
+def generate_pending_enrollments(n: int, fake: Faker, rng: random.Random) -> pd.DataFrame:
+    """Generate ``n`` enrollment candidates for Ticket 13's validation layer.
+
+    Most are valid; a small fixed cohort deliberately violates
+    ``config/enrollment_rules.yml`` (see ``_ENROLLMENT_DEFECT_COUNTS``) so
+    ``civicpay.enrollment.validators`` has a known set of defects to catch.
+    Called after ``generate_payment_file`` in ``generate_all`` so it consumes
+    ``fake``/``rng`` further along the shared deterministic stream without
+    shifting any earlier generator's output.
+    """
+    defect_total = sum(_ENROLLMENT_DEFECT_COUNTS.values())
+    n_clean = max(0, n - defect_total)
+    total = n_clean + defect_total
+    entity_ids = [f"ENT-{i:05d}" for i in range(1, total + 1)]
+
+    def clean_row(i: int, entity_id: str) -> dict[str, Any]:
+        program = rng.choice(list(ENROLLMENT_PROGRAMS))
+        cfg = ENROLLMENT_PROGRAMS[program]
+        term = rng.randint(*cfg["term_months"])
+        # ~80% of clean candidates are built from a round monthly installment
+        # (installment * term), so the dual-source gate's two independent
+        # rounding policies agree exactly -- matching the real-world pattern
+        # this ticket generalizes: a per-period ledger and a lump-sum total
+        # usually agree, and only occasionally drift by rounding remainder.
+        # The other ~20% use a fully arbitrary total (unlikely to divide
+        # evenly across the term), which is where they genuinely diverge.
+        if rng.random() < 0.8:
+            monthly = round(rng.uniform(50.0, float(cfg["max_incentive_amount"]) / term), 2)
+            amount = round(monthly * term, 2)
+        else:
+            amount = round(rng.uniform(500.0, float(cfg["max_incentive_amount"])), 2)
+        enroll_date = fake.date_time_between(
+            start_date=MIN_ENROLLMENT_DATE, end_date=AS_OF_DATETIME
+        ).replace(tzinfo=UTC)
+        return {
+            "enrollment_id": f"ENR-{i:06d}",
+            "entity_id": entity_id,
+            "program_code": program,
+            "enrollment_date": enroll_date,
+            "incentive_amount": f"{amount:.2f}",
+            "term_months": str(term),
+            "region": rng.choice(ENROLLMENT_REGIONS),
+            "submitted_by": f"operator-{rng.randint(1, 20):02d}",
+            "status": M.EnrollmentStatus.PENDING,
+            "created_at": AS_OF_DATETIME,
+        }
+
+    rows: list[dict[str, Any]] = [
+        clean_row(i, entity_ids[i - 1]) for i in range(1, n_clean + 1)
+    ]
+    idx = n_clean + 1
+
+    for _ in range(_ENROLLMENT_DEFECT_COUNTS["bad_date"]):
+        row = clean_row(idx, entity_ids[idx - 1])
+        if rng.random() < 0.5:
+            bad = MIN_ENROLLMENT_DATE - timedelta(days=rng.randint(1, 365))
+        else:
+            bad = AS_OF_DATE + timedelta(days=rng.randint(1, 365))
+        row["enrollment_date"] = datetime.combine(bad, datetime.min.time()).replace(tzinfo=UTC)
+        rows.append(row)
+        idx += 1
+
+    for _ in range(_ENROLLMENT_DEFECT_COUNTS["out_of_range_amount"]):
+        row = clean_row(idx, entity_ids[idx - 1])
+        cap = ENROLLMENT_PROGRAMS[row["program_code"]]["max_incentive_amount"]
+        bad_amount = rng.choice([-round(rng.uniform(10, 500), 2), round(cap * 3, 2)])
+        row["incentive_amount"] = f"{bad_amount:.2f}"
+        rows.append(row)
+        idx += 1
+
+    dup_entity = entity_ids[0]  # reuse a real clean row's entity_id on purpose
+    for _ in range(_ENROLLMENT_DEFECT_COUNTS["duplicate_entity_id"]):
+        row = clean_row(idx, dup_entity)
+        rows.append(row)
+        idx += 1
+
+    for _ in range(_ENROLLMENT_DEFECT_COUNTS["stray_space"]):
+        row = clean_row(idx, entity_ids[idx - 1])
+        amount = float(row["incentive_amount"])
+        row["incentive_amount"] = _stray_space_number(amount)
+        rows.append(row)
+        idx += 1
+
+    for _ in range(_ENROLLMENT_DEFECT_COUNTS["missing_required"]):
+        row = clean_row(idx, entity_ids[idx - 1])
+        row["submitted_by"] = ""
+        rows.append(row)
+        idx += 1
+
+    return pd.DataFrame(rows)
+
+
 # Intentionally stale cohort (OPEN_QUESTIONS §D): a small fraction of ledger
 # transactions are seeded with genuinely old created_at dates (45/60/90 days
 # before the as-of date) so the timeliness DQ check catches meaningful
@@ -386,6 +515,9 @@ def generate_all(
     accounts = generate_accounts(v["accounts"], customers, fake, rng)
     transactions = generate_transactions(v["transactions"], accounts, fake, rng)
     payment_files, payment_records = generate_payment_file(transactions, fake, rng)
+    # Appended last so it consumes fake/rng further along the shared
+    # deterministic stream without shifting any earlier generator's output.
+    pending_enrollments = generate_pending_enrollments(v["pending_enrollments"], fake, rng)
 
     return {
         M.Customer.TABLE: customers,
@@ -393,6 +525,7 @@ def generate_all(
         M.Transaction.TABLE: transactions,
         M.PaymentFile.TABLE: payment_files,
         M.PaymentRecord.TABLE: payment_records,
+        M.PendingEnrollment.TABLE: pending_enrollments,
     }
 
 
