@@ -31,10 +31,12 @@ Python 3.11+ · DuckDB (embedded) · dbt (v0.2) · Streamlit · Faker · Typer �
         +->[Data-quality module] -> dq_results -> [Exception queue]
                                                               |
                                                               v
-                                              [Streamlit dashboard] <- reads all marts
+                                              [Streamlit dashboard] <- reads raw/pipeline tables
         |
         v
-[dbt marts (v0.2)] -> analytical tables -> [Audit export / evidence package]
+[dbt marts (v0.2)] -> mart_recon_summary / mart_dq_summary / mart_exception_aging
+                       (parallel SQL port of the dashboard's own Python extractors —
+                        see docs/dbt.md — not a dependency of the dashboard or audit export)
 ```
 
 ## Storage
@@ -56,5 +58,5 @@ implementation runs entirely on synthetic data.
 | Streamlit dashboard | Implemented | — |
 | CLI wiring + end-to-end (`run-all`) | Implemented | — |
 | PyPI packaging + install CI | Implemented | — |
-| dbt analytical marts | Deferred (v0.2) | — |
+| dbt analytical marts | Implemented (v0.2) | [dbt.md](dbt.md) |
 | Enrollment & validation module (Ticket 13) | Implemented (v0.2) | [ai-implementation-backlog.md](ai-implementation-backlog.md) |

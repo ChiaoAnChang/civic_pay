@@ -1,0 +1,16 @@
+version: 2
+
+sources:
+  - name: civicpay_raw
+    schema: main
+    description: >
+      Tables written directly by the civicpay Python pipelines
+      (civicpay.storage.duckdb.DuckDBStore) — the dbt project's only
+      dependency on upstream state.
+    tables:
+      - name: transactions
+      - name: payment_records
+      - name: reconciliation_results
+      - name: dq_results
+      - name: exception_queue
+      - name: pending_enrollments

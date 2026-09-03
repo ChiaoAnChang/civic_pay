@@ -56,6 +56,9 @@ Python 3.11+ · DuckDB (embedded, no infrastructure) · dbt (v0.2) · Streamlit 
 
 ```bash
 pip install -e ".[dev]"
+
+# Optional: dbt analytical marts (see docs/dbt.md) — not needed for core CLI usage
+pip install -e ".[dbt]"
 ```
 
 ## Quickstart
@@ -95,6 +98,16 @@ civicpay audit export --batch BATCH-001 --out evidence.json
 # Launch the dashboard
 civicpay dashboard
 ```
+
+### dbt analytical marts (v0.2)
+
+```bash
+pip install -e ".[dbt]"     # dbt-core + dbt-duckdb, not installed by default
+civicpay dbt run             # build mart_recon_summary, mart_dq_summary, mart_exception_aging
+civicpay dbt test            # run the dbt schema/data tests
+```
+
+Runs directly against the same DuckDB file the pipelines write to — no warehouse. See [docs/dbt.md](docs/dbt.md) for what each mart mirrors and why.
 
 ### Enrollment & validation (v0.2)
 

@@ -12,7 +12,14 @@ resolved exception is its ``exception_resolve`` ledger event, not this score:
   past the SLA threshold (escalating overdue items).
 
 ``amount_at_risk`` is resolved by looking up the referenced record's amount
-(transactions / payment_records); 0 when no amount applies.
+(transactions / payment_records / pending_enrollments); ``None`` — not
+``0.0`` — when no amount concept applies (e.g. a DQ exception on accounts or
+customers) or the record/amount can't be resolved. The two are genuinely
+different: a resolved $0.00 is a real (if trivial) amount and gets the
+lowest bucket; "not applicable" gets a neutral midpoint bucket instead, so a
+high-severity amount-less exception isn't structurally capped below every
+dollar-bearing one in the same sorted queue (see ``NEUTRAL_AMOUNT_AT_RISK_
+FACTOR``).
 
 SLA window: by default it is resolved *per severity* (``SLA_DAYS_BY_SEVERITY``)
 rather than one global value — a high-severity item and a low-severity one
@@ -46,9 +53,26 @@ def resolve_sla_days(priority: str, sla_days: int | None) -> int:
     return SLA_DAYS_BY_SEVERITY.get(str(priority).lower(), DEFAULT_SLA_DAYS)
 
 
-def amount_at_risk_factor(amount: float) -> float:
-    """Bucket the at-risk amount into a 1–4 multiplier."""
-    a = float(amount or 0.0)
+# Neutral multiplier used when no dollar amount applies at all
+# (``amount is None``) — the midpoint of the 1-4 range, not the floor.
+# Distinguishing "not applicable" from "resolved to a genuine $0.00" matters:
+# without this, an amount-less exception could never outrank even a
+# medium-severity, moderately-priced dollar-bearing one, regardless of how
+# severe or systemic the amount-less issue actually was.
+NEUTRAL_AMOUNT_AT_RISK_FACTOR = 2.5
+
+
+def amount_at_risk_factor(amount: float | None) -> float:
+    """Bucket the at-risk amount into a 1–4 multiplier, or
+    ``NEUTRAL_AMOUNT_AT_RISK_FACTOR`` when ``amount is None`` (no dollar
+    amount concept applies to this exception) or NaN (an unresolvable value
+    that reached here anyway — e.g. a nullable DOUBLE amount column read
+    back as NaN; every bucket comparison against NaN is False, so without
+    this guard NaN would fall through to the *highest* bucket, the opposite
+    of the intended neutral treatment)."""
+    if amount is None or amount != amount:  # NaN != NaN is the only falsy self-inequality
+        return NEUTRAL_AMOUNT_AT_RISK_FACTOR
+    a = float(amount)
     if a < 100:
         return 1.0
     if a < 1_000:
@@ -68,7 +92,7 @@ def age_factor(age_days: int, sla_days: int = DEFAULT_SLA_DAYS) -> float:
 
 def compute_priority_score(
     priority: str,
-    amount_at_risk: float,
+    amount_at_risk: float | None,
     age_days: int,
     sla_days: int | None = None,
 ) -> float:

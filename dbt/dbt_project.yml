@@ -1,0 +1,39 @@
+name: 'civicpay'
+version: '1.0.0'
+config-version: 2
+profile: 'civicpay'
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# ``as_of_date`` mirrors ``civicpay.data.synthetic.AS_OF_DATE`` — the fixed
+# "today" the whole deterministic demo dataset is built against. Override
+# with ``--vars '{"as_of_date": "YYYY-MM-DD"}'`` to age mart_exception_aging
+# against a different date (e.g. after a fresh, non-default seed run).
+#
+# The dq_type_weight_* vars mirror config/dq_checks.yml's ``type_weights``.
+# dbt has no built-in way to read that YAML file at compile time, so the
+# weights are duplicated here — if config/dq_checks.yml's type_weights ever
+# change, update these too (see docs/dbt.md).
+vars:
+  as_of_date: '2026-09-01'
+  dq_type_weight_completeness: 1.0
+  dq_type_weight_accuracy: 1.0
+  dq_type_weight_consistency: 1.0
+  dq_type_weight_timeliness: 1.0
+  dq_type_weight_anomaly: 0.0
+
+models:
+  civicpay:
+    staging:
+      +materialized: view
+      +schema: staging
+    marts:
+      +materialized: table
+      +schema: marts

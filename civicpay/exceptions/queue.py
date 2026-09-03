@@ -8,6 +8,7 @@ computed on read so they never go stale.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any
 
@@ -46,28 +47,44 @@ class ExceptionManager:
 
     # -- reads ------------------------------------------------------------- #
 
-    def _amount_at_risk(self, reference_id: str) -> float:
-        """Look up the referenced record's amount; 0 when not applicable."""
+    def _amount_at_risk(self, reference_id: str) -> float | None:
+        """Look up the referenced record's amount.
+
+        Returns ``None`` — not ``0.0`` — when no amount concept applies to
+        this exception's dataset, or the record/amount can't be resolved.
+        This is a deliberate distinction, not a lookup failure: a resolved
+        ``0.0`` is a genuine (if trivial) amount and gets
+        ``amount_at_risk_factor``'s lowest bucket; "not applicable" gets the
+        neutral midpoint bucket instead (see
+        ``workflow.NEUTRAL_AMOUNT_AT_RISK_FACTOR``).
+        """
         if not reference_id or ":" not in reference_id:
-            return 0.0
+            return None
         dataset, rid = reference_id.split(":", 1)
         entry = _AMOUNT_DATASETS.get(dataset)
         if not entry:
-            return 0.0
+            return None
         table, id_field, amount_field = entry
         try:
             df = self.store.read_table(table)
         except Exception:
-            return 0.0
+            return None
         if df.empty or id_field not in df.columns or amount_field not in df.columns:
-            return 0.0
+            return None
         match = df[df[id_field].astype(str) == rid]
         if match.empty:
-            return 0.0
+            return None
         try:
-            return float(match[amount_field].iloc[0])
+            value = float(match[amount_field].iloc[0])
         except (TypeError, ValueError):
-            return 0.0
+            return None
+        # amount columns are nullable DOUBLE (civicpay/storage/duckdb.py) --
+        # a SQL NULL reads back as NaN, which float() accepts without
+        # raising. Treat it the same as an unresolvable amount: "not
+        # applicable", not a value that happens to fail every bucket
+        # comparison in amount_at_risk_factor and falls through to the
+        # *highest* one (the opposite of the intended neutral treatment).
+        return None if math.isnan(value) else value
 
     def list(
         self,
@@ -100,7 +117,8 @@ class ExceptionManager:
                     "assigned_to": None if pd.isna(r["assigned_to"]) else r["assigned_to"],
                     "age_days": age,
                     "sla_days": resolved_sla,
-                    "amount_at_risk": round(amt, 2),
+                    "amount_at_risk": round(amt, 2) if amt is not None else None,
+                    "amount_basis": "amount" if amt is not None else "n/a",
                     "amount_at_risk_factor": amount_at_risk_factor(amt),
                     "age_factor": age_factor(age, resolved_sla),
                     "priority_score": score,

@@ -19,7 +19,7 @@ from civicpay.data.synthetic import AS_OF_DATE, generate_all
 from civicpay.exceptions.queue import ExceptionManager
 from civicpay.quality.pipeline import run_dq
 from civicpay.recon.pipeline import run_recon
-from civicpay.storage.duckdb import DEFAULT_DB_PATH, DuckDBStore
+from civicpay.storage.duckdb import DB_PATH_ENV_VAR, DEFAULT_DB_PATH, DuckDBStore
 
 app = typer.Typer(
     name="civicpay",
@@ -238,10 +238,12 @@ def exception_list(
         "age_days",
         "sla_days",
         "amount_at_risk",
+        "basis",
         "priority_score",
     ):
         table.add_column(col, justify="right" if col in right_aligned else "left")
     for it in items:
+        amount_display = "n/a" if it["amount_at_risk"] is None else f"{it['amount_at_risk']:.2f}"
         table.add_row(
             it["exception_id"],
             it["source"],
@@ -249,7 +251,8 @@ def exception_list(
             it["status"],
             str(it["age_days"]),
             str(it["sla_days"]),
-            f"{it['amount_at_risk']:.2f}",
+            amount_display,
+            it["amount_basis"],
             f"{it['priority_score']:.2f}",
         )
     console.print(table)
@@ -528,6 +531,89 @@ def run_all(
     console.print(table)
     if stages[-1][1] != "verified":
         raise typer.Exit(code=1)
+
+
+dbt_app = typer.Typer(name="dbt", help="dbt analytical marts (v0.2).", no_args_is_help=True)
+app.add_typer(dbt_app)
+
+# dbt-core has no `python -m dbt` entry point (unlike streamlit — see
+# civicpay.dashboard.app.run_streamlit_app), so the console script is
+# located next to the current interpreter instead of hardcoding "dbt" and
+# hoping the venv's Scripts/bin dir is on PATH.
+_DBT_PROJECT_DIR = "dbt"
+
+
+def _dbt_executable() -> str:
+    import os
+    import sys
+
+    scripts_dir = Path(sys.executable).parent
+    candidate = scripts_dir / ("dbt.exe" if os.name == "nt" else "dbt")
+    return str(candidate) if candidate.exists() else "dbt"
+
+
+def _run_dbt(command: str, db_path: str | None, date: str | None, select: str | None) -> int:
+    import json
+    import os
+    import subprocess
+
+    env = os.environ.copy()
+    # dbt-core opens project files (dbt_project.yml, models/*.sql/.yml) with
+    # the platform default text encoding, not UTF-8. On a non-English
+    # Windows locale (e.g. cp950 Traditional Chinese) that crashes on the
+    # first non-ASCII byte in this project's own source — force UTF-8 mode
+    # rather than assuming every dbt file stays pure ASCII.
+    env["PYTHONUTF8"] = "1"
+    if db_path:
+        env[DB_PATH_ENV_VAR] = db_path
+    args = [
+        _dbt_executable(),
+        command,
+        "--project-dir",
+        _DBT_PROJECT_DIR,
+        "--profiles-dir",
+        _DBT_PROJECT_DIR,
+    ]
+    if date:
+        args += ["--vars", json.dumps({"as_of_date": date})]
+    if select:
+        args += ["--select", select]
+    result = subprocess.run(args, check=False, env=env)
+    return result.returncode
+
+
+@dbt_app.command("run")
+def dbt_run(
+    db_path: str = typer.Option(
+        None, help="DuckDB database path (default: the standard seeded location)."
+    ),
+    date: str = typer.Option(
+        str(AS_OF_DATE),
+        help="As-of date (YYYY-MM-DD) for mart_exception_aging's age calculation.",
+    ),
+    select: str = typer.Option(None, help="dbt --select expression to build a subset of models."),
+) -> None:
+    """Build the dbt marts (mart_recon_summary, mart_dq_summary, mart_exception_aging).
+
+    Requires the pipelines to have already run (``civicpay run-all`` or the
+    individual ``recon``/``dq``/``exception`` commands) — dbt reads their
+    output tables, it does not generate data.
+    """
+    code = _run_dbt("run", db_path=db_path, date=date, select=select)
+    raise typer.Exit(code=code)
+
+
+@dbt_app.command("test")
+def dbt_test(
+    db_path: str = typer.Option(
+        None, help="DuckDB database path (default: the standard seeded location)."
+    ),
+    date: str = typer.Option(str(AS_OF_DATE), help="As-of date (YYYY-MM-DD), passed as a dbt var."),
+    select: str = typer.Option(None, help="dbt --select expression to test a subset of models."),
+) -> None:
+    """Run dbt schema tests against the built marts."""
+    code = _run_dbt("test", db_path=db_path, date=date, select=select)
+    raise typer.Exit(code=code)
 
 
 @app.command("dashboard")

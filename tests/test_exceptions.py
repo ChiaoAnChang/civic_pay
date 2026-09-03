@@ -53,6 +53,15 @@ def test_amount_at_risk_factor_buckets(amount, factor):
     assert amount_at_risk_factor(amount) == factor
 
 
+def test_amount_at_risk_factor_none_is_neutral_midpoint():
+    """None ("not applicable") gets a distinct neutral factor -- not the
+    lowest bucket (0 would be a real, if trivial, resolved amount)."""
+    from civicpay.exceptions.workflow import NEUTRAL_AMOUNT_AT_RISK_FACTOR
+
+    assert amount_at_risk_factor(None) == NEUTRAL_AMOUNT_AT_RISK_FACTOR
+    assert 1.0 < NEUTRAL_AMOUNT_AT_RISK_FACTOR < 4.0
+
+
 def test_age_factor_within_sla():
     assert age_factor(0) == 1.0
     assert age_factor(DEFAULT_SLA_DAYS) == 1.0  # boundary: exactly SLA
@@ -148,20 +157,23 @@ def test_list_sorts_by_priority_score_desc(seeded_store):
     _write_exc(
         seeded_store,
         [
-            _exc_row("E1", ref="accounts:ACC-1", priority="low", created_at=as_of),  # 1*1*1 = 1.0
+            # accounts has no amount concept -> amount_basis="n/a", neutral
+            # factor 2.5 (not the lowest bucket 1.0 a resolved $0 would get).
+            _exc_row("E1", ref="accounts:ACC-1", priority="low", created_at=as_of),  # 1*2.5*1 = 2.5
             _exc_row(
                 "E2", ref="accounts:ACC-2", priority="high", created_at=as_of - timedelta(days=10)
-            ),  # high SLA=3 -> age_factor(10,3)=4.5 -> 3*1*4.5 = 13.5
+            ),  # high SLA=3 -> age_factor(10,3)=4.5 -> 3*2.5*4.5 = 33.75
             _exc_row(
                 "E3", ref="accounts:ACC-3", priority="medium", created_at=as_of - timedelta(days=5)
-            ),  # medium SLA=7 -> age_factor(5,7)=1.0 -> 2*1*1 = 2.0
+            ),  # medium SLA=7 -> age_factor(5,7)=1.0 -> 2*2.5*1 = 5.0
         ],
     )
     items = ExceptionManager(store=seeded_store, as_of=as_of).list()
     ids = [i["exception_id"] for i in items]
     assert ids == ["E2", "E3", "E1"]
-    assert items[0]["priority_score"] == 13.5
+    assert items[0]["priority_score"] == 33.75
     assert items[0]["sla_days"] == 3
+    assert items[0]["amount_basis"] == "n/a"
 
 
 def test_list_sla_days_override_applies_to_every_item(seeded_store):
@@ -201,21 +213,54 @@ def test_list_resolves_amount_at_risk_from_transaction(seeded_store):
     _write_exc(seeded_store, [_exc_row("E1", ref=ref, priority="medium")])
     items = ExceptionManager(store=seeded_store, as_of=AS_OF_DATETIME).list()
     assert items[0]["amount_at_risk"] == pytest.approx(expected_amount, rel=1e-6)
+    assert items[0]["amount_basis"] == "amount"
     # factor bucket for the actual amount
     assert items[0]["amount_at_risk_factor"] == amount_at_risk_factor(expected_amount)
 
 
-def test_list_amount_zero_for_non_amount_dataset(seeded_store):
+def test_list_amount_not_applicable_for_non_amount_dataset(seeded_store):
+    """accounts/customers exceptions have no dollar-amount concept -- this is
+    ``None`` ("not applicable"), not a resolved ``0.0``, and gets the neutral
+    midpoint factor rather than the lowest bucket (OPEN_QUESTIONS, exception
+    workflow: distinguishing "N/A" from "genuinely $0" so a high-severity
+    amount-less exception isn't structurally capped below every
+    dollar-bearing one)."""
     _write_exc(seeded_store, [_exc_row("E1", ref="accounts:ACC-000001", priority="high")])
     items = ExceptionManager(store=seeded_store, as_of=AS_OF_DATETIME).list()
-    assert items[0]["amount_at_risk"] == 0.0
-    assert items[0]["amount_at_risk_factor"] == 1.0
+    assert items[0]["amount_at_risk"] is None
+    assert items[0]["amount_basis"] == "n/a"
+    assert items[0]["amount_at_risk_factor"] == amount_at_risk_factor(None)
 
 
-def test_list_amount_zero_when_reference_missing(seeded_store):
+def test_list_amount_not_applicable_when_reference_missing(seeded_store):
     _write_exc(seeded_store, [_exc_row("E1", ref="transactions:DOES-NOT-EXIST", priority="high")])
     items = ExceptionManager(store=seeded_store, as_of=AS_OF_DATETIME).list()
-    assert items[0]["amount_at_risk"] == 0.0
+    assert items[0]["amount_at_risk"] is None
+    assert items[0]["amount_basis"] == "n/a"
+
+
+def test_list_amount_nan_treated_as_not_applicable_not_highest_bucket(seeded_store):
+    """A nullable amount column (transactions.amount / payment_records.amount
+    have no NOT NULL constraint) reads a SQL NULL back as NaN, not None --
+    and float(nan) does not raise. Without a guard, amount_at_risk_factor's
+    bucket comparisons are all False against NaN and fall through to the
+    *highest* bucket (4.0), the opposite of the intended neutral (2.5)
+    treatment for an unresolvable amount. Regression for a real bug found in
+    code review."""
+    import math
+
+    txns = seeded_store.read_table(M.Transaction.TABLE)
+    row = txns.iloc[0].to_dict()
+    row["transaction_id"] = "TXN-NAN-TEST"
+    row["amount"] = float("nan")
+    seeded_store.write_dataframe(M.Transaction.TABLE, pd.DataFrame([row]), mode="append")
+
+    _write_exc(seeded_store, [_exc_row("E1", ref="transactions:TXN-NAN-TEST", priority="high")])
+    items = ExceptionManager(store=seeded_store, as_of=AS_OF_DATETIME).list()
+    assert items[0]["amount_at_risk"] is None
+    assert items[0]["amount_basis"] == "n/a"
+    assert not math.isnan(items[0]["amount_at_risk_factor"])
+    assert items[0]["amount_at_risk_factor"] == amount_at_risk_factor(None)
 
 
 def test_list_age_days_uses_created_at(seeded_store):

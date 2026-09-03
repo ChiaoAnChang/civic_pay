@@ -1,0 +1,19 @@
+# Committed (not the usual ~/.dbt/profiles.yml location) because this
+# project has no secrets to protect — DuckDB is an embedded, file-based
+# database, and the path below is either the framework's own standard
+# default location or an explicit override, never a credential. Keeping it
+# in-repo lets `civicpay dbt run`/`test` and CI invoke dbt with
+# `--profiles-dir dbt` and no per-machine setup.
+civicpay:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      # Same env var civicpay's own CLI/Streamlit apps use to locate a
+      # non-default database (civicpay.storage.duckdb.DB_PATH_ENV_VAR).
+      # Default matches civicpay.storage.duckdb.DEFAULT_DB_PATH, resolved
+      # relative to the current working directory dbt is invoked from
+      # (repo root — see the `civicpay dbt` CLI wrapper).
+      path: "{{ env_var('CIVICPAY_DB_PATH', 'data/processed/civicpay.duckdb') }}"
+      schema: main
+      threads: 4
