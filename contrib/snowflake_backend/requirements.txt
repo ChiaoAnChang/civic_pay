@@ -1,0 +1,5 @@
+# Not part of civicpay's own dependency tree (pyproject.toml only packages
+# civicpay/). Install these yourself if you actually want to try running
+# store.py against a real Snowflake account — see README.md's status
+# disclaimer first.
+snowflake-connector-python[pandas]>=3.6.0

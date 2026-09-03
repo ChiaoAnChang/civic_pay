@@ -60,3 +60,4 @@ implementation runs entirely on synthetic data.
 | PyPI packaging + install CI | Implemented | — |
 | dbt analytical marts | Implemented (v0.2) | [dbt.md](dbt.md) |
 | Enrollment & validation module (Ticket 13) | Implemented (v0.2) | [ai-implementation-backlog.md](ai-implementation-backlog.md) |
+| Cloud storage backend | Documented + unverified reference draft, not adopted | [cloud-backend.md](cloud-backend.md), [contrib/snowflake_backend/](../contrib/snowflake_backend/) |
