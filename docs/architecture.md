@@ -12,16 +12,22 @@ Python 3.11+ · DuckDB (embedded) · dbt (v0.2) · Streamlit · Faker · Typer �
 ## Data flow
 
 ```
-[Synthetic data generator] -> raw/ (CSV/Parquet)
-        |
-        v
-[Ingest] -> DuckDB raw tables
-        |
-        v
-[Reconciliation module] -> recon_results -> [Exception queue]
-        |        \                                              |
-        |         \-> audit events -----------------------> [Audit-evidence log] (hash-chained)
-        |
+[Enrollment form / CLI] -> validate -> [Dual-source gate] (v0.2)
+                                          |            \
+                                     agree|             \disagree
+                                          v               v
+                            [accepted_enrollments]   [Exception queue]
+                                                              |
+[Synthetic data generator] -> raw/ (CSV/Parquet)              |
+        |                                                     |
+        v                                                     |
+[Ingest] -> DuckDB raw tables                                 |
+        |                                                     |
+        v                                                     |
+[Reconciliation module] -> recon_results -> [Exception queue]  |
+        |        \                                        |    |
+        |         \-> audit events ---------------> [Audit-evidence log] (hash-chained)
+        |                                                 ^
         +->[Data-quality module] -> dq_results -> [Exception queue]
                                                               |
                                                               v
@@ -45,10 +51,10 @@ implementation runs entirely on synthetic data.
 | DuckDB storage layer | Implemented | — |
 | Payment reconciliation + audit-ledger core | Implemented | [reconciliation.md](reconciliation.md) |
 | Data-quality monitoring | Implemented | [data-quality.md](data-quality.md) |
-| Exception workflow (priority + SLA aging) | Implemented | — |
-| Audit-evidence layer (verify + export) | Implemented | — |
+| Exception workflow (priority + SLA aging) | Implemented | [exceptions.md](exceptions.md) |
+| Audit-evidence layer (verify + export) | Implemented | [audit.md](audit.md) |
 | Streamlit dashboard | Implemented | — |
 | CLI wiring + end-to-end (`run-all`) | Implemented | — |
 | PyPI packaging + install CI | Implemented | — |
 | dbt analytical marts | Deferred (v0.2) | — |
-| Enrollment & validation module (Ticket 13) | Under architecture review, not started | [ai-implementation-backlog.md](ai-implementation-backlog.md) |
+| Enrollment & validation module (Ticket 13) | Implemented (v0.2) | [ai-implementation-backlog.md](ai-implementation-backlog.md) |

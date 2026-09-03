@@ -25,6 +25,7 @@ thresholds, control logic, workflow definitions, schema shapes, value distributi
 | DuckDB embedded storage | published-standard | DuckDB public documentation |
 | Streamlit dashboard | published-standard | Streamlit public documentation |
 | Federal-policy alignment (FSOC third-party risk, FDIC BaaS reconciliation, FinCEN ransomware, CFPB data access) | public-regulatory | See docs/source-appendix |
+| Enrollment & validation module (Ticket 13): constrained-input capture + dual-source agreement gate | original | Generalizes a common, non-proprietary enterprise pattern (constrained data entry coupled with dual-source validation before a record is committed) into an original clean-room design: declarative validation rules (`config/enrollment_rules.yml`), a pure-Python proration path and an independent SQL-via-DuckDB path that must agree within tolerance to accept a record. Program codes, caps, and term ranges are original synthetic values, not derived from or matched to any real incentive/rebate program or employer system. |
 
 **Review gate:** No public release occurs until (a) an attorney reviews the repository for IP and confidentiality concerns, and (b) the contributor confirms in writing that no employer confidential information is present.
 

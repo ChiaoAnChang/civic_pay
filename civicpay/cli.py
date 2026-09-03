@@ -285,8 +285,30 @@ def exception_resolve(
     )
 
 
-enroll_app = typer.Typer(name="enroll", help="Enrollment & validation (Ticket 13).", no_args_is_help=True)
+enroll_app = typer.Typer(
+    name="enroll",
+    help="Enrollment & validation (Ticket 13).",
+    invoke_without_command=True,
+)
 app.add_typer(enroll_app)
+
+
+@enroll_app.callback()
+def enroll_main(
+    ctx: typer.Context,
+    db_path: str = typer.Option(None, help="DuckDB database path (form mode only)."),
+) -> None:
+    """Bare ``civicpay enroll`` launches the Streamlit form; ``civicpay
+    enroll validate`` runs the batch CLI path instead."""
+    if ctx.invoked_subcommand is None:
+        from civicpay.enrollment.forms import run_streamlit_app
+
+        try:
+            code = run_streamlit_app(db_path=db_path)
+        except FileNotFoundError as e:
+            console.print(f"[red]{e}[/]")
+            raise typer.Exit(code=1) from e
+        raise typer.Exit(code=code)
 
 
 @enroll_app.command("validate")
@@ -509,11 +531,20 @@ def run_all(
 
 
 @app.command("dashboard")
-def dashboard() -> None:
-    """Launch the Streamlit dashboard (recon, DQ, exceptions, audit views)."""
+def dashboard(
+    db_path: str = typer.Option(
+        None, help="DuckDB database path (default: the standard seeded location)."
+    ),
+) -> None:
+    """Launch the Streamlit dashboard (recon, DQ, exceptions, audit, enrollment views)."""
     from civicpay.dashboard.app import run_streamlit_app
 
-    raise SystemExit(run_streamlit_app())
+    try:
+        code = run_streamlit_app(db_path=db_path)
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(code=1) from e
+    raise typer.Exit(code=code)
 
 
 if __name__ == "__main__":

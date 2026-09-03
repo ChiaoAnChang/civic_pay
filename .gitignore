@@ -32,6 +32,13 @@ data/processed/*
 .DS_Store
 Thumbs.db
 
+# Internal planning/petition drafts — never committed (petition narrative,
+# session handoff notes). Only distilled engineering content (see docs/)
+# belongs in the public repo.
+/CivicPay Handoff Document.md
+/CivicPay Open Framework — Project Charter & Implementation Spec.md
+/CivicPay Open Framework — Ticket 13 (Enrollment & Validation Module).md
+
 # build artifacts
 civicpay/_version.py
 *.egg-info/
@@ -40,3 +47,9 @@ dist/
 __pycache__/
 *.pyc
 data/processed/*.duckdb
+
+# Any stray DuckDB file anywhere (ad-hoc/scratch test databases created
+# outside data/processed/ during manual testing must never be committed —
+# one such file was accidentally committed in 84fed02 before this rule
+# existed; see the CHANGELOG/OPEN_QUESTIONS note about it).
+*.duckdb

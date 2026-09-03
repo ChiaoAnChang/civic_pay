@@ -134,9 +134,7 @@ def generate_pending_enrollments(n: int, fake: Faker, rng: random.Random) -> pd.
             "created_at": AS_OF_DATETIME,
         }
 
-    rows: list[dict[str, Any]] = [
-        clean_row(i, entity_ids[i - 1]) for i in range(1, n_clean + 1)
-    ]
+    rows: list[dict[str, Any]] = [clean_row(i, entity_ids[i - 1]) for i in range(1, n_clean + 1)]
     idx = n_clean + 1
 
     for _ in range(_ENROLLMENT_DEFECT_COUNTS["bad_date"]):

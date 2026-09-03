@@ -6,11 +6,15 @@ import pytest
 from civicpay.dashboard.extractors import (
     dq_dataset_scores,
     dq_scores,
+    enrollment_mismatches,
+    enrollment_summary,
     exception_queue,
     recent_audit_events,
     reconciliation_summary,
 )
+from civicpay.data import models as M
 from civicpay.data.synthetic import AS_OF_DATETIME, generate_all
+from civicpay.enrollment.pipeline import EnrollmentPipeline
 from civicpay.quality.pipeline import QualityPipeline
 from civicpay.recon.pipeline import ReconciliationPipeline
 from civicpay.storage.duckdb import DuckDBStore
@@ -41,10 +45,40 @@ def test_reconciliation_summary_has_rate_and_counts(seeded_store):
     assert rec["matched"] + rec["exceptions"] == rec["total"]
 
 
+def test_reconciliation_summary_separates_payment_rate_from_ledger_coverage(seeded_store):
+    """Regression for a real bug: the dashboard used to recompute
+    reconciliation_rate over *every* reconciliation_results row, including
+    unmatched_ledger rows the pipeline appends for ledger transactions with
+    no corresponding payment -- giving the same-named metric two different
+    values in one product (the recon engine itself, civicpay.recon.matcher,
+    always computes it payment-side-only). Ledger coverage is now its own,
+    separate field instead of being blended into the headline rate.
+
+    Uses a fresh store with a ledger much larger than the payment file (the
+    project's actual default-seed shape) rather than the shared
+    ``seeded_store`` fixture's small 500-transaction ledger, which the recon
+    matcher's exact-match bucket fully consumes (0 unmatched ledger rows) --
+    that would defeat the point of this specific assertion.
+    """
+    store = DuckDBStore(":memory:")
+    store.init_schema()
+    data = generate_all(seed=11, volumes={"customers": 500, "accounts": 200, "transactions": 2000})
+    store.write_many(data, mode="replace")
+    ReconciliationPipeline(store=store).run(batch_id="RATE-CHECK")
+
+    dash = reconciliation_summary(store, batch_id="RATE-CHECK")
+    assert dash["ledger_total"] > dash["total"]
+    assert dash["unmatched_ledger"] == dash["ledger_total"] - dash["total"]
+    assert 0.0 <= dash["ledger_coverage_rate"] <= 100.0
+    store.close()
+
+
 def test_reconciliation_summary_by_status_and_method(seeded_store):
     rec = reconciliation_summary(seeded_store, batch_id="DASH1")
     assert "matched" in rec["by_status"]
-    assert sum(rec["by_status"].values()) == rec["total"]
+    # by_status covers every reconciliation_results row (including
+    # unmatched_ledger), so it sums to ledger_total, not the payment-side total.
+    assert sum(rec["by_status"].values()) == rec["ledger_total"]
     assert sum(rec["by_method"].values()) == rec["matched"]  # only matched rows have a method
 
 
@@ -57,6 +91,9 @@ def test_reconciliation_summary_empty_store():
         "matched": 0,
         "exceptions": 0,
         "reconciliation_rate": 0.0,
+        "ledger_total": 0,
+        "unmatched_ledger": 0,
+        "ledger_coverage_rate": 0.0,
         "by_status": {},
         "by_method": {},
     }
@@ -125,6 +162,141 @@ def test_exception_queue_has_aging_and_priority(seeded_store):
     assert scores == sorted(scores, reverse=True)
 
 
+# --------------------------------------------------------------------------- #
+# Enrollment (Ticket 13)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def enrolled_store():
+    store = DuckDBStore(":memory:")
+    store.init_schema()
+    data = generate_all(
+        seed=11,
+        volumes={"customers": 100, "accounts": 50, "transactions": 500, "pending_enrollments": 60},
+    )
+    store.write_many(data, mode="replace")
+    EnrollmentPipeline(store=store).run()
+    return store
+
+
+def test_enrollment_summary_counts(enrolled_store):
+    summary = enrollment_summary(enrolled_store)
+    assert summary["total"] == 60
+    assert summary["accepted"] + summary["mismatch"] + summary["rejected"] == 60
+
+
+def test_enrollment_summary_empty_store():
+    store = DuckDBStore(":memory:")
+    store.init_schema()
+    summary = enrollment_summary(store)
+    assert summary == {"total": 0, "pending": 0, "accepted": 0, "mismatch": 0, "rejected": 0}
+    store.close()
+
+
+def test_enrollment_mismatches_has_both_computed_values(enrolled_store):
+    df = enrollment_mismatches(enrolled_store, AS_OF_DATETIME)
+    assert not df.empty
+    for col in (
+        "enrollment_id",
+        "method_a_amount",
+        "method_b_amount",
+        "delta",
+        "age_days",
+        "sla_days",
+    ):
+        assert col in df.columns
+    # Sorted most urgent first.
+    scores = df["priority_score"].tolist()
+    assert scores == sorted(scores, reverse=True)
+    # Backlog cohort is included alongside real mismatches.
+    assert any("BACKLOG" in eid for eid in df["exception_id"])
+
+
+def test_enrollment_mismatches_empty_store():
+    store = DuckDBStore(":memory:")
+    store.init_schema()
+    assert enrollment_mismatches(store, AS_OF_DATETIME).empty
+    store.close()
+
+
+def test_resolve_enrollment_mismatch_accept_a_writes_accepted_row(enrolled_store):
+    from civicpay.enrollment.pipeline import resolve_enrollment_mismatch
+
+    df = enrollment_mismatches(enrolled_store, AS_OF_DATETIME)
+    real = df[~df["exception_id"].str.contains("BACKLOG")].iloc[0]
+    before = enrolled_store.table_count(M.AcceptedEnrollment.TABLE)
+
+    result = resolve_enrollment_mismatch(
+        enrolled_store,
+        exception_id=real["exception_id"],
+        decision="accept_a",
+        root_cause="manual review confirmed method A",
+        as_of=AS_OF_DATETIME,
+    )
+    assert result["status"] == M.ExceptionStatus.RESOLVED
+    assert enrolled_store.table_count(M.AcceptedEnrollment.TABLE) == before + 1
+
+    accepted = enrolled_store.read_table(M.AcceptedEnrollment.TABLE)
+    row = accepted[accepted["enrollment_id"] == real["enrollment_id"]].iloc[0]
+    assert row["expected_payout"] == pytest.approx(real["method_a_amount"])
+
+
+def test_resolve_enrollment_mismatch_reject_marks_pending_rejected(enrolled_store):
+    from civicpay.enrollment.pipeline import resolve_enrollment_mismatch
+
+    df = enrollment_mismatches(enrolled_store, AS_OF_DATETIME)
+    real = df[~df["exception_id"].str.contains("BACKLOG")].iloc[0]
+
+    resolve_enrollment_mismatch(
+        enrolled_store,
+        exception_id=real["exception_id"],
+        decision="reject",
+        root_cause="dual-source disagreement not resolvable",
+        as_of=AS_OF_DATETIME,
+    )
+    pending = enrolled_store.read_table(M.PendingEnrollment.TABLE)
+    row = pending[pending["enrollment_id"] == real["enrollment_id"]].iloc[0]
+    assert row["status"] == M.EnrollmentStatus.REJECTED
+
+
+def test_resolve_enrollment_mismatch_backlog_item_has_no_pending_row(enrolled_store):
+    """Backlog cohort items bypass pending_enrollments by design; resolving
+    one still resolves the exception, just without an accepted_enrollments
+    completion (there's no source record to complete)."""
+    from civicpay.enrollment.pipeline import resolve_enrollment_mismatch
+
+    df = enrollment_mismatches(enrolled_store, AS_OF_DATETIME)
+    backlog = df[df["exception_id"].str.contains("BACKLOG")].iloc[0]
+    before = enrolled_store.table_count(M.AcceptedEnrollment.TABLE)
+
+    result = resolve_enrollment_mismatch(
+        enrolled_store,
+        exception_id=backlog["exception_id"],
+        decision="accept_a",
+        root_cause="demo backlog item",
+        as_of=AS_OF_DATETIME,
+    )
+    assert result["status"] == M.ExceptionStatus.RESOLVED
+    assert (
+        enrolled_store.table_count(M.AcceptedEnrollment.TABLE) == before
+    )  # no source row to complete
+
+
+def test_resolve_enrollment_mismatch_unknown_decision_raises(enrolled_store):
+    from civicpay.enrollment.pipeline import resolve_enrollment_mismatch
+
+    df = enrollment_mismatches(enrolled_store, AS_OF_DATETIME)
+    real = df.iloc[0]
+    with pytest.raises(ValueError, match="Unknown decision"):
+        resolve_enrollment_mismatch(
+            enrolled_store,
+            exception_id=real["exception_id"],
+            decision="bogus",
+            root_cause="x",
+        )
+
+
 def test_exception_queue_empty_store():
     store = DuckDBStore(":memory:")
     store.init_schema()
@@ -174,9 +346,56 @@ def test_cli_dashboard_command_registered(monkeypatch):
     # Mock run_streamlit_app so we don't actually start a server.
     import civicpay.dashboard.app as app_module
 
-    monkeypatch.setattr(app_module, "run_streamlit_app", lambda target=None: 0)
+    monkeypatch.setattr(app_module, "run_streamlit_app", lambda target=None, db_path=None: 0)
     result = runner.invoke(cli_app, ["dashboard"])
     assert result.exit_code == 0
+
+
+def test_cli_dashboard_db_path_forwarded(monkeypatch):
+    import civicpay.dashboard.app as app_module
+    from civicpay.cli import app as cli_app
+    from typer.testing import CliRunner
+
+    seen = {}
+
+    def fake_run(target=None, db_path=None):
+        seen["db_path"] = db_path
+        return 0
+
+    monkeypatch.setattr(app_module, "run_streamlit_app", fake_run)
+    result = CliRunner().invoke(cli_app, ["dashboard", "--db-path", "some.duckdb"])
+    assert result.exit_code == 0
+    assert seen["db_path"] == "some.duckdb"
+
+
+def test_cli_dashboard_missing_db_fails_cleanly():
+    """A --db-path that doesn't exist exits 1 with a clean message, not a
+    raw traceback (matches the existing pre-flight-error CLI convention)."""
+    from civicpay.cli import app as cli_app
+    from typer.testing import CliRunner
+
+    result = CliRunner().invoke(cli_app, ["dashboard", "--db-path", "does-not-exist.duckdb"])
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower()
+
+
+def test_cli_enroll_bare_launches_form(monkeypatch):
+    """Bare `civicpay enroll` (no subcommand) launches the Streamlit form."""
+    import civicpay.enrollment.forms as forms_module
+    from civicpay.cli import app as cli_app
+    from typer.testing import CliRunner
+
+    seen = {}
+
+    def fake_run(target=None, db_path=None):
+        seen["called"] = True
+        seen["db_path"] = db_path
+        return 0
+
+    monkeypatch.setattr(forms_module, "run_streamlit_app", fake_run)
+    result = CliRunner().invoke(cli_app, ["enroll", "--db-path", "some.duckdb"])
+    assert result.exit_code == 0
+    assert seen == {"called": True, "db_path": "some.duckdb"}
 
 
 def test_cli_run_all_end_to_end(tmp_path):

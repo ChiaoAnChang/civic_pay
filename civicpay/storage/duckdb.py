@@ -21,6 +21,28 @@ from civicpay.data import models as M
 # Default location for the processed DuckDB database file.
 DEFAULT_DB_PATH = Path("data/processed/civicpay.duckdb")
 
+# Env var a Streamlit subprocess reads to find a non-default database (a
+# Python call argument can't reach a `streamlit run` child process directly —
+# see resolve_db_path).
+DB_PATH_ENV_VAR = "CIVICPAY_DB_PATH"
+
+
+def resolve_db_path(explicit: str | os.PathLike[str] | None = None) -> Path:
+    """Resolve the DB path: explicit arg > ``CIVICPAY_DB_PATH`` env var > default.
+
+    The env var exists specifically for Streamlit apps (``civicpay/dashboard
+    /app.py``, ``civicpay/enrollment/forms.py``): ``streamlit run`` launches
+    the script as a fresh subprocess, so a CLI ``--db-path`` flag can't reach
+    the script's own ``render()`` call as a Python argument — the launching
+    command sets this env var instead (see ``run_streamlit_app``).
+    """
+    if explicit is not None:
+        return Path(explicit)
+    env_path = os.environ.get(DB_PATH_ENV_VAR)
+    if env_path:
+        return Path(env_path)
+    return DEFAULT_DB_PATH
+
 
 def _naive_utc(df: pd.DataFrame) -> pd.DataFrame:
     """Convert timezone-aware datetime columns to naive UTC before a DB write.

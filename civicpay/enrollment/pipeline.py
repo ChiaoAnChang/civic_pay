@@ -149,6 +149,12 @@ class EnrollmentPipeline:
         self._print_summary(summary, outcomes)
         return summary
 
+    def submit_one(self, raw: dict[str, Any], actor: str = "operator") -> EnrollmentOutcome:
+        """Validate + dual-source-gate a single ad hoc submission (e.g. from
+        the Streamlit form) — not sourced from ``pending_enrollments`` or a
+        file, so there is no batch to check other entity ids against."""
+        return self._process_one(raw, seen_entity_ids=set(), actor=actor)
+
     # -- helpers ------------------------------------------------------------ #
 
     def _process_one(
@@ -321,6 +327,95 @@ class EnrollmentPipeline:
             console.print(f"[yellow]{len(rejected)} record(s) rejected at validation:[/]")
             for o in rejected[:10]:
                 console.print(f"  {o.enrollment_id}: {'; '.join(o.issues)}")
+
+
+_DECISIONS = ("accept_a", "accept_b", "reject")
+
+
+def resolve_enrollment_mismatch(
+    store: DuckDBStore,
+    exception_id: str,
+    decision: str,
+    root_cause: str,
+    actor: str = "system",
+    as_of: datetime = AS_OF_DATETIME,
+) -> dict[str, Any]:
+    """Human resolution of a routed dual-source mismatch (Ticket 13 §8).
+
+    ``decision`` is one of ``"accept_a"``, ``"accept_b"`` (complete the
+    enrollment using that path's amount — writes ``accepted_enrollments``),
+    or ``"reject"`` (the enrollment is not accepted; marks the source
+    ``pending_enrollments`` row, if any, rejected so it's clear re-entry is
+    needed). Every outcome still resolves the underlying exception via the
+    existing :meth:`ExceptionManager.resolve` — this reuses that method's
+    signature rather than adding a parallel one, encoding the 3-way decision
+    into ``resolution_notes`` (see the shared exception schema's lack of a
+    dedicated column for this — the same trade-off ``root_cause`` already
+    makes for every other exception type).
+
+    The aged backlog cohort (``_seed_backlog_cohort``) has no
+    ``pending_enrollments`` row to complete (by design — it's synthetic
+    demo filler, not a real submitted candidate), so ``accept_a``/``accept_b``
+    on a backlog item resolves the exception without writing
+    ``accepted_enrollments``.
+    """
+    if decision not in _DECISIONS:
+        raise ValueError(f"Unknown decision '{decision}' (expected one of {_DECISIONS}).")
+
+    exc_df = store.read_table(M.ExceptionItem.TABLE)
+    match = exc_df[exc_df["exception_id"] == exception_id]
+    if match.empty:
+        raise ValueError(f"Exception {exception_id} not found.")
+    enrollment_id = str(match.iloc[0]["reference_id"]).split(":", 1)[-1]
+
+    if decision in ("accept_a", "accept_b"):
+        dsr_df = store.read_table(M.DualSourceResult.TABLE)
+        dsr_match = dsr_df[dsr_df["enrollment_id"] == enrollment_id]
+        if dsr_match.empty:
+            raise ValueError(f"No dual-source result found for enrollment {enrollment_id}.")
+        dsr_row = dsr_match.iloc[0]
+        chosen = (
+            dsr_row["method_a_amount"] if decision == "accept_a" else dsr_row["method_b_amount"]
+        )
+
+        pending_df = store.read_table(M.PendingEnrollment.TABLE)
+        pending_match = pending_df[pending_df["enrollment_id"] == enrollment_id]
+        if not pending_match.empty:
+            src = pending_match.iloc[0]
+            accepted_row = {
+                "enrollment_id": enrollment_id,
+                "entity_id": src["entity_id"],
+                "program_code": src["program_code"],
+                "enrollment_date": src["enrollment_date"],
+                "incentive_amount": float(src["incentive_amount"]),
+                "term_months": int(src["term_months"]),
+                "region": src["region"],
+                "submitted_by": src["submitted_by"],
+                "expected_payout": float(chosen),
+                "accepted_at": as_of,
+                "batch_id": enrollment_id,
+            }
+            store.write_dataframe(
+                M.AcceptedEnrollment.TABLE, pd.DataFrame([accepted_row]), mode="append"
+            )
+            store.execute(
+                "UPDATE pending_enrollments SET status = ? WHERE enrollment_id = ?",
+                [M.EnrollmentStatus.ACCEPTED, enrollment_id],
+            )
+    else:
+        store.execute(
+            "UPDATE pending_enrollments SET status = ? WHERE enrollment_id = ?",
+            [M.EnrollmentStatus.REJECTED, enrollment_id],
+        )
+
+    from civicpay.exceptions.queue import ExceptionManager
+
+    return ExceptionManager(store=store, as_of=as_of).resolve(
+        exception_id=exception_id,
+        root_cause=root_cause,
+        actor=actor,
+        resolution_notes=f"decision={decision}",
+    )
 
 
 def run_enrollment_validate(

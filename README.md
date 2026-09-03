@@ -16,12 +16,18 @@ CivicPay Open Framework is a **governance toolset**, not a payment processor or 
 - Not Reg E / BSA / AML compliance advice.
 - Not production-ready; not for real PII without an institution-specific security and compliance review.
 
-## Architecture (four layers)
+## Architecture
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
+│       0. Enrollment & Validation  (point of capture, v0.2)           │
+│       form / CLI → validate → dual-source gate → accept or mismatch   │
+└──────────────────────────────────┬────────────────────────────────────┘
+                                    │ mismatch routes below
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────┐
 │                         Streamlit Dashboard                        │
-│        (recon summary · DQ scores · exceptions · audit log)          │
+│  (recon summary · DQ scores · exceptions · audit log · enrollment)   │
 ├──────────────┬────────────────┬──────────────────┬───────────────────┤
 │  1. Recon    │   2. Data-      │  3. Exception    │  4. Audit-        │
 │  matching    │   quality       │  workflow        │  evidence         │
@@ -33,10 +39,14 @@ CivicPay Open Framework is a **governance toolset**, not a payment processor or 
         determinism (seed=)              tamper-evidence (SHA-256 chain)
 ```
 
+Layer 0 is upstream of the original four: it prevents dirty data from ever
+reaching the ledger, complementing layers 1–4's post-hoc detection.
+
 1. **Payment Reconciliation** — match inbound payment files against ledger entries; classify matched / unmatched / exception.
 2. **Data-Quality Monitoring** — completeness, accuracy, consistency, timeliness, anomaly checks; per-dataset quality score.
 3. **Exception Workflow** — priority-ranked queue, SLA aging, resolution with root-cause capture.
 4. **Audit-Evidence Layer** — append-only, hash-chained (tamper-evident) event log; exportable evidence packages.
+5. **Enrollment & Validation** (v0.2) — a point-of-capture complement to the four layers above: a constrained-input Streamlit form and CLI batch path validate candidate records, then a dual-source agreement gate (one pure-Python path, one independent SQL path) accepts a record only when both agree — otherwise it's routed into the same exception workflow for human review. See [docs/ai-implementation-backlog.md](docs/ai-implementation-backlog.md).
 
 ## Tech stack
 
@@ -86,6 +96,25 @@ civicpay audit export --batch BATCH-001 --out evidence.json
 civicpay dashboard
 ```
 
+### Enrollment & validation (v0.2)
+
+```bash
+# Launch the constrained-input Streamlit enrollment form
+civicpay enroll
+
+# Or validate a batch: the seeded pending_enrollments pool by default,
+# or an external CSV via --file
+civicpay enroll validate
+civicpay enroll validate --file records.csv
+```
+
+Rules (program caps, term ranges, regions, dual-source tolerance) live in
+[`config/enrollment_rules.yml`](config/enrollment_rules.yml). Accepted records
+land in `accepted_enrollments`; dual-source disagreements route to the same
+exception queue as recon/DQ (`civicpay exception list/resolve`, or the
+dashboard's Enrollment & Validation section, which can also resolve a
+mismatch by accepting either computed value or rejecting it for re-entry).
+
 ### Data quality configuration
 
 DQ checks are configured in [`config/dq_checks.yml`](config/dq_checks.yml) — per-dataset check definitions (type, rule, params), type weights, and the exception-routing cap. See [docs/data-quality.md](docs/data-quality.md) for the full check catalogue.
@@ -94,7 +123,7 @@ DQ checks are configured in [`config/dq_checks.yml`](config/dq_checks.yml) — p
 
 Data generation and all pipelines are deterministic given a fixed `--seed`. Each run should use a **fresh `--batch-id`** (the audit log and exception queue are append-only; re-running the same batch id on the same DB collides on primary keys).
 
-See [docs/reconciliation.md](docs/reconciliation.md) for the reconciliation module's full technical documentation (algorithm, data model, configuration, API, test results, and operational behavior). See [docs/data-quality.md](docs/data-quality.md) for the DQ module, [docs/architecture.md](docs/architecture.md) for the module status table, and [docs/methodology.md](docs/methodology.md) for the overall design.
+See [docs/reconciliation.md](docs/reconciliation.md) for the reconciliation module's full technical documentation (algorithm, data model, configuration, API, test results, and operational behavior). See [docs/data-quality.md](docs/data-quality.md) for the DQ module, [docs/exceptions.md](docs/exceptions.md) for the exception workflow (priority, SLA aging, the demo backlog cohort), [docs/audit.md](docs/audit.md) for the audit-evidence layer (hash chaining, evidence export, and two real bugs found and fixed in it), [docs/architecture.md](docs/architecture.md) for the module status table, and [docs/methodology.md](docs/methodology.md) for the overall design.
 
 ## Clean-room provenance
 

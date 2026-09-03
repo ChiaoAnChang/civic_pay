@@ -22,7 +22,21 @@ from civicpay.storage.duckdb import DuckDBStore
 
 
 def reconciliation_summary(store: DuckDBStore, batch_id: str | None = None) -> dict[str, Any]:
-    """Return reconciliation rate + outcome breakdown for a batch (or latest)."""
+    """Return reconciliation rate + outcome breakdown for a batch (or latest).
+
+    ``reconciliation_rate`` is computed over **payment-side** rows only
+    (``match_status != unmatched_ledger``) — matching how
+    ``civicpay.recon.matcher`` / the CLI's own `run-all` summary compute the
+    same-named metric (over `payments_processed`, not the full
+    `reconciliation_results` table). This dashboard extractor used to
+    recompute it independently over *every* row, including the
+    `unmatched_ledger` rows `ReconciliationPipeline` appends for ledger
+    entries that were never going to match anything (there are far fewer
+    payments than ledger transactions by design) — same metric name, two
+    different numbers in one product (0.89 vs. ~0.018 on the default seed).
+    Ledger coverage is a real, separate story and is now reported as its own
+    field (`ledger_coverage_rate`) rather than blended into the headline.
+    """
     df = store.read_table(M.ReconciliationResult.TABLE)
     if batch_id:
         df = df[df["batch_id"] == batch_id]
@@ -32,20 +46,38 @@ def reconciliation_summary(store: DuckDBStore, batch_id: str | None = None) -> d
             "matched": 0,
             "exceptions": 0,
             "reconciliation_rate": 0.0,
+            "ledger_total": 0,
+            "unmatched_ledger": 0,
+            "ledger_coverage_rate": 0.0,
             "by_status": {},
             "by_method": {},
         }
-    total = int(len(df))
-    matched = int((df["match_status"] == M.MatchStatus.MATCHED).sum())
+    payments_df = df[df["match_status"] != M.MatchStatus.UNMATCHED_LEDGER]
+    total = int(len(payments_df))
+    matched = int((payments_df["match_status"] == M.MatchStatus.MATCHED).sum())
     exceptions = total - matched
     rate = round(100.0 * matched / total, 2) if total else 0.0
+
+    ledger_total = int(len(df))
+    unmatched_ledger = int((df["match_status"] == M.MatchStatus.UNMATCHED_LEDGER).sum())
+    ledger_coverage_rate = (
+        round(100.0 * (ledger_total - unmatched_ledger) / ledger_total, 2) if ledger_total else 0.0
+    )
+
     by_status = df["match_status"].value_counts().to_dict()
-    by_method = df["match_method"].value_counts().to_dict() if "match_method" in df.columns else {}
+    by_method = (
+        payments_df["match_method"].value_counts().to_dict()
+        if "match_method" in payments_df.columns
+        else {}
+    )
     return {
         "total": total,
         "matched": matched,
         "exceptions": exceptions,
         "reconciliation_rate": rate,
+        "ledger_total": ledger_total,
+        "unmatched_ledger": unmatched_ledger,
+        "ledger_coverage_rate": ledger_coverage_rate,
         "by_status": {str(k): int(v) for k, v in by_status.items()},
         "by_method": {str(k): int(v) for k, v in by_method.items()},
     }
@@ -113,6 +145,51 @@ def exception_queue(
     if not items:
         return pd.DataFrame()
     return pd.DataFrame(items)
+
+
+def enrollment_summary(store: DuckDBStore) -> dict[str, Any]:
+    """Outcome counts for the seeded ``pending_enrollments`` pool (Ticket 13).
+
+    Scoped to that table specifically — the aged backlog cohort seeded by
+    ``EnrollmentPipeline`` bypasses it by design (see
+    ``EnrollmentPipeline._seed_backlog_cohort``), so those items are visible
+    in :func:`enrollment_mismatches` but not counted here.
+    """
+    df = store.read_table(M.PendingEnrollment.TABLE)
+    if df.empty:
+        return {"total": 0, "pending": 0, "accepted": 0, "mismatch": 0, "rejected": 0}
+    counts = df["status"].value_counts()
+    return {
+        "total": int(len(df)),
+        "pending": int(counts.get(M.EnrollmentStatus.PENDING, 0)),
+        "accepted": int(counts.get(M.EnrollmentStatus.ACCEPTED, 0)),
+        "mismatch": int(counts.get(M.EnrollmentStatus.MISMATCH, 0)),
+        "rejected": int(counts.get(M.EnrollmentStatus.REJECTED, 0)),
+    }
+
+
+def enrollment_mismatches(
+    store: DuckDBStore, as_of: datetime, sla_days: int | None = None
+) -> pd.DataFrame:
+    """Enrollment dual-source-mismatch exceptions with both computed values.
+
+    Joins the shared exception queue (filtered to
+    ``source="enrollment_dual_source"``) with ``enrollment_dual_source_results``
+    on the enrollment id encoded in ``reference_id``
+    (``"pending_enrollments:{enrollment_id}"``).
+    """
+    items = ExceptionManager(store=store, as_of=as_of).list(sla_days=sla_days)
+    rows = [i for i in items if i["source"] == M.ExceptionSource.ENROLLMENT_DUAL_SOURCE]
+    if not rows:
+        return pd.DataFrame()
+    exc_df = pd.DataFrame(rows)
+    exc_df["enrollment_id"] = exc_df["reference_id"].str.split(":", n=1).str[1]
+
+    dsr = store.read_table(M.DualSourceResult.TABLE)
+    dsr = dsr[["enrollment_id", "method_a_amount", "method_b_amount", "delta"]]
+
+    merged = exc_df.merge(dsr, on="enrollment_id", how="left")
+    return merged.sort_values("priority_score", ascending=False).reset_index(drop=True)
 
 
 def recent_audit_events(store: DuckDBStore, limit: int = 100) -> pd.DataFrame:

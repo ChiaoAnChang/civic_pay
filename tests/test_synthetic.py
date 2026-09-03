@@ -15,6 +15,7 @@ from civicpay.data.synthetic import (
     bucket_counts,
     generate_all,
     generate_payment_file,
+    generate_pending_enrollments,
 )
 
 
@@ -208,3 +209,78 @@ def test_stale_cohort_skipped_below_pool_size():
         created = created.dt.tz_convert("UTC").dt.tz_localize(None)
     age_days = (as_of - created).dt.days
     assert (age_days <= 30).all()
+
+
+# --------------------------------------------------------------------------- #
+# Enrollment candidates (Ticket 13)
+# --------------------------------------------------------------------------- #
+
+
+def test_pending_enrollments_seeded_in_generate_all(synthetic_data):
+    assert M.PendingEnrollment.TABLE in synthetic_data
+    df = synthetic_data[M.PendingEnrollment.TABLE]
+    assert len(df) == 200  # DEFAULT_VOLUMES["pending_enrollments"]
+    assert (df["status"] == M.EnrollmentStatus.PENDING).all()
+
+
+def test_enrollment_defect_cohort_present():
+    import random
+
+    from faker import Faker
+
+    fake = Faker()
+    fake.seed_instance(42)
+    rng = random.Random(42)
+    df = generate_pending_enrollments(50, fake, rng)
+    assert len(df) == 50
+
+    # Duplicate entity_id defect: at least one entity_id appears more than once.
+    assert df["entity_id"].duplicated().any()
+
+    # Stray-space numeric defect: at least one incentive_amount has an
+    # embedded space that survives .strip() (unparseable even after outer trim).
+    stripped = df["incentive_amount"].str.strip()
+    assert (stripped.str.contains(" ")).any()
+
+    # Missing-required defect: at least one submitted_by is blank.
+    assert (df["submitted_by"].str.strip() == "").any()
+
+    # Out-of-range amount defect: at least one negative incentive_amount.
+    # (coerce, not astype -- the stray-space cohort is deliberately
+    # unparseable and must not blow up this unrelated assertion.)
+    numeric = pd.to_numeric(df["incentive_amount"], errors="coerce")
+    assert (numeric < 0).any()
+
+
+def test_enrollment_candidates_deterministic():
+    import random
+
+    from faker import Faker
+
+    fake_a = Faker()
+    fake_a.seed_instance(42)
+    df_a = generate_pending_enrollments(50, fake_a, random.Random(42))
+
+    fake_b = Faker()
+    fake_b.seed_instance(42)
+    df_b = generate_pending_enrollments(50, fake_b, random.Random(42))
+
+    assert df_a.to_csv(index=False) == df_b.to_csv(index=False)
+
+
+def test_enrollment_generation_does_not_disturb_earlier_generators():
+    """Appending the enrollment generator to generate_all must not change any
+    earlier generator's output (it's called last, consuming rng/fake further
+    along the shared stream)."""
+    with_enrollment = generate_all(
+        seed=42, volumes={"customers": 100, "accounts": 50, "transactions": 500}
+    )
+    without = {
+        k: v
+        for k, v in generate_all(
+            seed=42, volumes={"customers": 100, "accounts": 50, "transactions": 500}
+        ).items()
+        if k != M.PendingEnrollment.TABLE
+    }
+    for table in without:
+        assert with_enrollment[table].to_csv(index=False) == without[table].to_csv(index=False)
