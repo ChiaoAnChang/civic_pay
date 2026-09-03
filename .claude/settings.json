@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"w:/project/civic_pay\" && \".venv/Scripts/python.exe\" -m ruff check . && \".venv/Scripts/python.exe\" -m ruff format --check .)",
+      "Bash(cd \"w:/project/civic_pay\" && \".venv/Scripts/python.exe\" -m ruff check . 2>&1)",
+      "mcp__mcp-registry__list_connectors"
+    ]
+  }
+}

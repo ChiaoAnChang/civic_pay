@@ -84,6 +84,7 @@ class DQCheckType:
 class ExceptionSource:
     RECON = "recon"
     DQ = "dq"
+    ENROLLMENT_DUAL_SOURCE = "enrollment_dual_source"
 
 
 class ExceptionPriority:
@@ -105,6 +106,16 @@ class AuditEventType:
     EXCEPTION_RESOLVE = "exception_resolve"
     CONFIG_CHANGE = "config_change"
     DQ_CHECK = "dq_check"
+    ENROLLMENT_VALIDATE = "enrollment_validate"
+    ENROLLMENT_ACCEPT = "enrollment_accept"
+    ENROLLMENT_MISMATCH = "enrollment_mismatch"
+
+
+class EnrollmentStatus:
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    MISMATCH = "mismatch"
+    REJECTED = "rejected"
 
 
 # --------------------------------------------------------------------------- #
@@ -234,6 +245,69 @@ class ExceptionItem:
 
 
 @dataclass
+class PendingEnrollment:
+    """A raw enrollment candidate awaiting validation (Ticket 13).
+
+    Seeded by ``civicpay seed`` (some records deliberately violate
+    ``config/enrollment_rules.yml`` so the validators have something to
+    catch) or inserted ad hoc by ``civicpay enroll validate --file``.
+    """
+
+    enrollment_id: str
+    entity_id: str
+    program_code: str
+    enrollment_date: datetime
+    incentive_amount: str  # raw text, not yet parsed — unvalidated intake
+    term_months: str  # raw text, not yet parsed — unvalidated intake
+    region: str
+    submitted_by: str
+    status: str
+    created_at: datetime
+
+    TABLE: ClassVar[str] = "pending_enrollments"
+
+
+@dataclass
+class AcceptedEnrollment:
+    """An enrollment whose dual-source paths agreed (Ticket 13)."""
+
+    enrollment_id: str
+    entity_id: str
+    program_code: str
+    enrollment_date: datetime
+    incentive_amount: Decimal
+    term_months: int
+    region: str
+    submitted_by: str
+    expected_payout: Decimal
+    accepted_at: datetime
+    batch_id: str
+
+    TABLE: ClassVar[str] = "accepted_enrollments"
+
+
+@dataclass
+class DualSourceResult:
+    """One dual-source agreement-gate evaluation (Ticket 13).
+
+    Recorded for every evaluated enrollment, agreeing or not — mirrors
+    ``dq_results`` always recording pass *and* fail outcomes, not just
+    failures.
+    """
+
+    result_id: str
+    enrollment_id: str
+    method_a_amount: Decimal
+    method_b_amount: Decimal
+    delta: Decimal
+    tolerance: Decimal
+    agreed: bool
+    evaluated_at: datetime
+
+    TABLE: ClassVar[str] = "enrollment_dual_source_results"
+
+
+@dataclass
 class AuditEvent:
     event_id: str
     timestamp: datetime
@@ -259,6 +333,9 @@ ENTITY_MODELS: dict[str, type] = {
     DQResult.TABLE: DQResult,
     ExceptionItem.TABLE: ExceptionItem,
     AuditEvent.TABLE: AuditEvent,
+    PendingEnrollment.TABLE: PendingEnrollment,
+    AcceptedEnrollment.TABLE: AcceptedEnrollment,
+    DualSourceResult.TABLE: DualSourceResult,
 }
 
 # Default generation volumes (Section 13.2 of the spec)
@@ -267,4 +344,5 @@ DEFAULT_VOLUMES: dict[str, int] = {
     "accounts": 5_000,
     "transactions": 50_000,
     "payment_records": 1_000,  # one payment file with 1000 records
+    "pending_enrollments": 200,  # Ticket 13
 }

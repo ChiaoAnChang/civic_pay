@@ -1,0 +1,38 @@
+version: 2
+
+models:
+  - name: mart_recon_summary
+    description: >
+      One row per reconciliation batch_id — payment-side reconciliation_rate
+      and full-ledger ledger_coverage_rate reported separately (see
+      OPEN_QUESTIONS §K). Mirrors civicpay.dashboard.extractors.reconciliation_summary.
+    columns:
+      - name: batch_id
+        data_tests: [not_null, unique]
+
+  - name: mart_dq_summary
+    description: >
+      One row per dataset_name — check-type-weighted quality_score and
+      anomaly_rate. Mirrors civicpay.quality.scoring.dataset_quality_score
+      and civicpay.dashboard.extractors.dq_dataset_scores.
+    columns:
+      - name: dataset_name
+        data_tests: [not_null, unique]
+
+  - name: mart_exception_aging
+    description: >
+      One row per exception_queue item with the full computed priority
+      formula (severity_weight x amount_at_risk_factor x age_factor).
+      Mirrors civicpay.exceptions.workflow + civicpay.exceptions.queue's
+      amount lookup, including the None-vs-0.0 and NaN handling from
+      OPEN_QUESTIONS §Q.
+    columns:
+      - name: exception_id
+        data_tests: [not_null, unique]
+      - name: amount_basis
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['amount', 'n/a']
+      - name: priority_score
+        data_tests: [not_null]

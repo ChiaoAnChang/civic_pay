@@ -9,6 +9,7 @@ any employer system.
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,54 @@ from civicpay.data import models as M
 
 # Default location for the processed DuckDB database file.
 DEFAULT_DB_PATH = Path("data/processed/civicpay.duckdb")
+
+# Env var a Streamlit subprocess reads to find a non-default database (a
+# Python call argument can't reach a `streamlit run` child process directly —
+# see resolve_db_path).
+DB_PATH_ENV_VAR = "CIVICPAY_DB_PATH"
+
+
+def resolve_db_path(explicit: str | os.PathLike[str] | None = None) -> Path:
+    """Resolve the DB path: explicit arg > ``CIVICPAY_DB_PATH`` env var > default.
+
+    The env var exists specifically for Streamlit apps (``civicpay/dashboard
+    /app.py``, ``civicpay/enrollment/forms.py``): ``streamlit run`` launches
+    the script as a fresh subprocess, so a CLI ``--db-path`` flag can't reach
+    the script's own ``render()`` call as a Python argument — the launching
+    command sets this env var instead (see ``run_streamlit_app``).
+    """
+    if explicit is not None:
+        return Path(explicit)
+    env_path = os.environ.get(DB_PATH_ENV_VAR)
+    if env_path:
+        return Path(env_path)
+    return DEFAULT_DB_PATH
+
+
+def _naive_utc(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert timezone-aware datetime columns to naive UTC before a DB write.
+
+    All framework TIMESTAMP columns are timezone-naive (see ``SCHEMA_DDL``).
+    Inserting a timezone-aware pandas column silently converts it to the
+    *local system timezone* before dropping the tz info (standard DB-driver
+    behavior) — verified empirically: a UTC value written on a UTC-5 machine
+    comes back 5 hours earlier. That corrupts any value derived from a
+    tz-aware datetime (e.g. ``AS_OF_DATETIME``, tzinfo=UTC) on any machine not
+    set to UTC, and breaks the audit hash chain: ``civicpay.audit.ledger``
+    hashes the in-memory tz-aware timestamp treating it as UTC, but a verifier
+    recomputes the hash from the persisted (silently shifted) row, so the two
+    never match even with zero tampering. Converting to UTC and stripping the
+    tz here — instead of the implicit local-time conversion — keeps the
+    round-trip exact everywhere, independent of the host machine's timezone.
+    """
+    tz_cols = [c for c in df.columns if isinstance(df[c].dtype, pd.DatetimeTZDtype)]
+    if not tz_cols:
+        return df
+    df = df.copy()
+    for c in tz_cols:
+        df[c] = df[c].dt.tz_convert("UTC").dt.tz_localize(None)
+    return df
+
 
 # DDL for every framework table. Types map to DuckDB SQL types.
 SCHEMA_DDL: dict[str, str] = {
@@ -127,6 +176,18 @@ SCHEMA_DDL: dict[str, str] = {
             root_cause          VARCHAR
         )
     """,
+    # previous_hash UNIQUE: converts the read-then-write race
+    # civicpay.audit.ledger.AuditLedger._initialize_chain() is exposed to
+    # (two writers reading the same chain tip and both appending against it)
+    # from a silent chain fork into a catchable duckdb.ConstraintException —
+    # AuditLedger.append()/append_many() retry against the re-read true tip
+    # on that specific exception. Not reachable under DuckDB's own
+    # single-writer file lock today (see docs/cloud-backend.md's concurrency
+    # section for why); this hardens the schema regardless, since it's the
+    # precondition for any future backend that permits concurrent writers.
+    # NOTE: CREATE TABLE IF NOT EXISTS does not retrofit this constraint
+    # onto a database file created before this change — an existing
+    # data/processed/*.duckdb needs a fresh `civicpay seed` to pick it up.
     M.AuditEvent.TABLE: """
         CREATE TABLE IF NOT EXISTS audit_event_log (
             event_id            VARCHAR PRIMARY KEY,
@@ -136,8 +197,49 @@ SCHEMA_DDL: dict[str, str] = {
             entity_type         VARCHAR,
             entity_id           VARCHAR,
             action              VARCHAR,
-            previous_hash       VARCHAR,
+            previous_hash       VARCHAR UNIQUE,
             event_hash          VARCHAR
+        )
+    """,
+    M.PendingEnrollment.TABLE: """
+        CREATE TABLE IF NOT EXISTS pending_enrollments (
+            enrollment_id       VARCHAR PRIMARY KEY,
+            entity_id           VARCHAR,
+            program_code        VARCHAR,
+            enrollment_date     TIMESTAMP,
+            incentive_amount    VARCHAR,
+            term_months         VARCHAR,
+            region              VARCHAR,
+            submitted_by        VARCHAR,
+            status              VARCHAR,
+            created_at          TIMESTAMP
+        )
+    """,
+    M.AcceptedEnrollment.TABLE: """
+        CREATE TABLE IF NOT EXISTS accepted_enrollments (
+            enrollment_id       VARCHAR PRIMARY KEY,
+            entity_id           VARCHAR,
+            program_code        VARCHAR,
+            enrollment_date     TIMESTAMP,
+            incentive_amount    DOUBLE,
+            term_months         INTEGER,
+            region              VARCHAR,
+            submitted_by        VARCHAR,
+            expected_payout     DOUBLE,
+            accepted_at         TIMESTAMP,
+            batch_id            VARCHAR
+        )
+    """,
+    M.DualSourceResult.TABLE: """
+        CREATE TABLE IF NOT EXISTS enrollment_dual_source_results (
+            result_id           VARCHAR PRIMARY KEY,
+            enrollment_id       VARCHAR,
+            method_a_amount     DOUBLE,
+            method_b_amount     DOUBLE,
+            delta               DOUBLE,
+            tolerance           DOUBLE,
+            agreed              BOOLEAN,
+            evaluated_at        TIMESTAMP
         )
     """,
 }
@@ -149,6 +251,7 @@ SEED_TABLES = [
     M.Transaction.TABLE,
     M.PaymentFile.TABLE,
     M.PaymentRecord.TABLE,
+    M.PendingEnrollment.TABLE,
 ]
 
 
@@ -197,6 +300,7 @@ class DuckDBStore:
         unknown tables are dropped and recreated). ``mode='append'`` inserts
         rows. ``mode='overwrite'`` deletes existing rows then inserts.
         """
+        df = _naive_utc(df)
         if mode == "replace":
             if table in SCHEMA_DDL:
                 # Preserve the canonical schema/PKs: ensure the table exists,
@@ -221,11 +325,27 @@ class DuckDBStore:
         for table, df in tables.items():
             self.write_dataframe(table, df, mode=mode)
 
+    def execute(self, sql: str, params: list[Any] | None = None) -> duckdb.DuckDBPyConnection:
+        """Run a parameterized statement (INSERT/UPDATE/SELECT) against the DB.
+
+        Prefer this over ``store.conn.execute(...)`` directly whenever a
+        parameter may be a timezone-aware ``datetime`` (e.g. ``as_of``):
+        binding one into a naive TIMESTAMP column silently converts it
+        through the local system timezone (same issue ``_naive_utc`` fixes
+        for DataFrame writes — see its docstring), which is wrong on any
+        machine not set to UTC. This normalizes such parameters first.
+        """
+        params = [
+            p.astimezone(UTC).replace(tzinfo=None) if isinstance(p, datetime) and p.tzinfo else p
+            for p in (params or [])
+        ]
+        return self.conn.execute(sql, params)
+
     # -- reads ------------------------------------------------------------- #
 
     def query(self, sql: str, params: list[Any] | None = None) -> pd.DataFrame:
         """Run a SQL query and return the result as a DataFrame."""
-        return self.conn.execute(sql, params or []).df()
+        return self.execute(sql, params).df()
 
     def read_table(self, table: str, limit: int | None = None) -> pd.DataFrame:
         """Read a full table (optionally limited) into a DataFrame."""

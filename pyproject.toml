@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.21"]
+requires = ["hatchling>=1.21", "hatch-vcs>=0.5.0"]
 build-backend = "hatchling.build"
 
 [project]
 name = "civicpay"
-version = "0.1.0"
+dynamic = ["version"]
 description = "CivicPay Open Framework — clean-room, open-source reference implementation of financial-data-governance methodology (reconciliation, data quality, exception workflow, audit evidence)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -36,12 +36,24 @@ dev = [
     "pytest-cov>=5.0.0",
     "ruff>=0.5.0",
 ]
+dbt = [
+    "dbt-core>=1.12.0",
+    "dbt-duckdb>=1.11.0",
+]
 
 [project.scripts]
 civicpay = "civicpay.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["civicpay"]
+
+[tool.hatch.version]
+source = "vcs"
+raw-options = { local_scheme = "no-local-version" }
+fallback-version = "0.0.0"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "civicpay/_version.py"
 
 [tool.ruff]
 line-length = 100

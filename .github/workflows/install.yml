@@ -1,0 +1,72 @@
+name: Install
+
+# Verifies the package is pip-installable and the CLI + dashboard import cleanly
+# in a fresh environment (the "PyPI-publishable install" check from Ticket 10).
+# On v* tags, publishes to PyPI using Trusted Publishing (OIDC) — no shared
+# secret required.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so hatch-vcs can read git tags
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build package
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+
+      - name: Install from wheel in a fresh venv
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/python -m pip install --upgrade pip
+          /tmp/venv/bin/python -m pip install dist/*.whl
+
+      - name: Smoke import + CLI help
+        run: |
+          /tmp/venv/bin/python -c "import civicpay; print(civicpay.__version__)"
+          /tmp/venv/bin/python -c "from civicpay.dashboard.app import run_streamlit_app, render; print('dashboard ok')"
+          /tmp/venv/bin/civicpay --help
+          /tmp/venv/bin/civicpay run-all --help
+
+  publish:
+    needs: install
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: pypi  # manual approval gate before an irreversible upload
+    permissions:
+      id-token: write  # required for Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - name: Publish to PyPI (Trusted Publishing / OIDC)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
