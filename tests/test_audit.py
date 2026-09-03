@@ -313,3 +313,145 @@ def test_cli_audit_export_unknown_batch_exits_nonzero(tmp_path):
     result = runner.invoke(app, ["audit", "export", "--batch", "NOPE", "--db-path", str(db)])
     assert result.exit_code == 1
     assert "No audit events found" in result.output
+
+
+# --------------------------------------------------------------------------- #
+# previous_hash UNIQUE constraint + retry (OPEN_QUESTIONS §S / docs/cloud-backend.md)
+# --------------------------------------------------------------------------- #
+
+
+def test_previous_hash_unique_constraint_enforced(ledger_store):
+    """The schema itself, not just application logic, rejects two events
+    claiming the same previous_hash — the precondition the retry logic
+    below depends on."""
+    import duckdb
+
+    _seed_chain(ledger_store, batch_id="AUD1", n=1)
+    with pytest.raises(duckdb.ConstraintException):
+        ledger_store.conn.execute(
+            f"INSERT INTO {M.AuditEvent.TABLE} VALUES "
+            f"('EVT-FAKE-000001', TIMESTAMP '2026-09-01', 'ingest', 'x', 'x', 'x', 'x', '', 'fakehash')"
+        )
+
+
+def test_append_retries_on_stale_previous_hash(ledger_store):
+    """Simulates two AuditLedger instances racing on the same chain tip —
+    the shape of the race docs/cloud-backend.md describes (currently
+    unreachable in practice under DuckDB's own single-writer file lock, but
+    reachable in this test by directly desynchronizing a second instance's
+    cached tip from the true one, the same way test_audit.py's tamper tests
+    reach through store.conn to simulate conditions no normal code path
+    produces).
+
+    Without the retry, this second append would either violate the new
+    UNIQUE constraint and crash, or (pre-constraint) silently fork the chain
+    exactly like the OPEN_QUESTIONS §G bug. With the retry, it must
+    transparently re-resolve the true tip and produce a validly-chained
+    second event.
+    """
+    first_ledger = AuditLedger(store=ledger_store, actor="tester", as_of=AS_OF_DATETIME)
+    first = first_ledger.append(
+        event_type=M.AuditEventType.MATCH,
+        entity_type="payment",
+        entity_id="P0001",
+        action="reconcile",
+        batch_id="AUD1",
+    )
+
+    stale_ledger = AuditLedger(store=ledger_store, actor="tester", as_of=AS_OF_DATETIME)
+    # Force this instance to believe the chain is still empty — the state a
+    # second writer would be in had it read the tip before `first` was
+    # appended, then attempted its own append after.
+    stale_ledger._previous_hash = ""
+    stale_ledger._chain_initialized = True
+    stale_ledger._batch_id = "AUD2"
+
+    second = stale_ledger.append(
+        event_type=M.AuditEventType.MATCH,
+        entity_type="payment",
+        entity_id="P0002",
+        action="reconcile",
+        batch_id="AUD2",
+    )
+
+    # The retry must have kicked in: "" is already claimed by `first`'s own
+    # previous_hash, so a naive write would have collided. The corrected
+    # write chains off the true tip instead.
+    assert second["previous_hash"] == first["event_hash"]
+
+    report = verify_chain(ledger_store)
+    assert report["verified"] is True
+    assert report["event_count"] == 2
+
+
+def test_append_many_retries_on_stale_previous_hash(ledger_store):
+    """Same race, through append_many()'s batch path — the whole batch must
+    be rebuilt off the corrected tip, not just its first row."""
+    first_ledger = AuditLedger(store=ledger_store, actor="tester", as_of=AS_OF_DATETIME)
+    first = first_ledger.append(
+        event_type=M.AuditEventType.MATCH,
+        entity_type="payment",
+        entity_id="P0001",
+        action="reconcile",
+        batch_id="AUD1",
+    )
+
+    stale_ledger = AuditLedger(store=ledger_store, actor="tester", as_of=AS_OF_DATETIME)
+    stale_ledger._previous_hash = ""
+    stale_ledger._chain_initialized = True
+    stale_ledger._batch_id = "AUD2"
+
+    rows = stale_ledger.append_many(
+        [
+            {
+                "event_type": M.AuditEventType.MATCH,
+                "entity_type": "payment",
+                "entity_id": f"P{i:04d}",
+                "action": "reconcile",
+                "batch_id": "AUD2",
+            }
+            for i in range(2, 4)
+        ]
+    )
+
+    assert len(rows) == 2
+    assert rows.iloc[0]["previous_hash"] == first["event_hash"]
+    assert rows.iloc[1]["previous_hash"] == rows.iloc[0]["event_hash"]
+
+    report = verify_chain(ledger_store)
+    assert report["verified"] is True
+    assert report["event_count"] == 3
+
+
+def test_append_gives_up_after_max_attempts(ledger_store, monkeypatch):
+    """A persistent (not just one-shot) conflict must fail loudly with a
+    clear error, not loop forever or silently give up."""
+    ledger = AuditLedger(store=ledger_store, actor="tester", as_of=AS_OF_DATETIME)
+    ledger.append(
+        event_type=M.AuditEventType.MATCH,
+        entity_type="payment",
+        entity_id="P0001",
+        action="reconcile",
+        batch_id="AUD1",
+    )
+
+    # Force every re-resolution to land back on the same already-taken
+    # previous_hash ("" — already claimed by the first event above), instead
+    # of the real _initialize_chain's behavior of converging on the true,
+    # unclaimed tip. This simulates a *persistent* conflict (every attempt
+    # collides, not just the first).
+    def _stuck_at_genesis() -> None:
+        ledger._previous_hash = ""
+        ledger._chain_initialized = True
+
+    monkeypatch.setattr(ledger, "_initialize_chain", _stuck_at_genesis)
+    ledger._previous_hash = ""
+
+    with pytest.raises(RuntimeError, match="Failed to append"):
+        ledger.append(
+            event_type=M.AuditEventType.MATCH,
+            entity_type="payment",
+            entity_id="P0002",
+            action="reconcile",
+            batch_id="AUD1",
+        )

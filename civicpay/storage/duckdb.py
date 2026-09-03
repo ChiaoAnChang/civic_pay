@@ -176,6 +176,18 @@ SCHEMA_DDL: dict[str, str] = {
             root_cause          VARCHAR
         )
     """,
+    # previous_hash UNIQUE: converts the read-then-write race
+    # civicpay.audit.ledger.AuditLedger._initialize_chain() is exposed to
+    # (two writers reading the same chain tip and both appending against it)
+    # from a silent chain fork into a catchable duckdb.ConstraintException —
+    # AuditLedger.append()/append_many() retry against the re-read true tip
+    # on that specific exception. Not reachable under DuckDB's own
+    # single-writer file lock today (see docs/cloud-backend.md's concurrency
+    # section for why); this hardens the schema regardless, since it's the
+    # precondition for any future backend that permits concurrent writers.
+    # NOTE: CREATE TABLE IF NOT EXISTS does not retrofit this constraint
+    # onto a database file created before this change — an existing
+    # data/processed/*.duckdb needs a fresh `civicpay seed` to pick it up.
     M.AuditEvent.TABLE: """
         CREATE TABLE IF NOT EXISTS audit_event_log (
             event_id            VARCHAR PRIMARY KEY,
@@ -185,7 +197,7 @@ SCHEMA_DDL: dict[str, str] = {
             entity_type         VARCHAR,
             entity_id           VARCHAR,
             action              VARCHAR,
-            previous_hash       VARCHAR,
+            previous_hash       VARCHAR UNIQUE,
             event_hash          VARCHAR
         )
     """,

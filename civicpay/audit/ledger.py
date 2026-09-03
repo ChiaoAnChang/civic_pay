@@ -26,11 +26,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+import duckdb
 import pandas as pd
 from civicpay.data import models as M
 from civicpay.data.synthetic import AS_OF_DATETIME
@@ -167,6 +169,54 @@ class AuditLedger:
         self._previous_hash = event_hash
         return row
 
+    # Retry budget for _write_rows_with_retry. Not reachable under DuckDB's
+    # own single-writer file lock (see docs/cloud-backend.md) — a small,
+    # finite bound exists so a bug that made this genuinely unreachable path
+    # loop forever would fail loudly (RuntimeError) instead of hanging.
+    _MAX_APPEND_ATTEMPTS = 5
+
+    def _write_rows_with_retry(
+        self, row_builder: Callable[[], list[dict[str, Any]]]
+    ) -> list[dict[str, Any]]:
+        """Build rows via ``row_builder`` and persist them, retrying against
+        the true chain tip if a concurrent writer advanced it first.
+
+        The ``previous_hash`` ``UNIQUE`` constraint (``civicpay.storage.
+        duckdb.SCHEMA_DDL``) turns the read-then-write race in
+        ``_initialize_chain``'s docstring into a catchable
+        ``duckdb.ConstraintException`` instead of a silent chain fork: if
+        another writer's event claimed the same ``previous_hash`` first,
+        this instance's insert fails cleanly rather than both being
+        accepted. On that specific exception, roll back this instance's
+        local sequence counter, re-resolve the true tip, and rebuild the
+        same logical rows chained off the corrected tip.
+
+        Under DuckDB's own single-writer file lock, a second writer can
+        never even open the database concurrently, so this retry path is
+        unreachable and untested against a live race today — it exists so
+        this code is not itself the reason a future backend that does
+        permit concurrent writers (see docs/cloud-backend.md) would still
+        be unsafe.
+        """
+        last_error: duckdb.ConstraintException | None = None
+        for _attempt in range(self._MAX_APPEND_ATTEMPTS):
+            seq_before = self._seq
+            rows = row_builder()
+            if not rows:
+                return rows
+            try:
+                self.store.write_dataframe(M.AuditEvent.TABLE, pd.DataFrame(rows), mode="append")
+                return rows
+            except duckdb.ConstraintException as e:
+                last_error = e
+                self._seq = seq_before
+                self._chain_initialized = False
+                self._initialize_chain()
+        raise RuntimeError(
+            f"Failed to append audit event(s) after {self._MAX_APPEND_ATTEMPTS} "
+            f"attempts due to a persistent chain-tip conflict: {last_error}"
+        )
+
     def append(
         self,
         event_type: str,
@@ -184,16 +234,19 @@ class AuditLedger:
         here, because only stored fields are hashed so the chain stays
         re-computable from the table alone.
         """
-        row = self._next_row(
-            event_type=event_type,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            action=action,
-            batch_id=batch_id,
-            timestamp=timestamp or self.as_of,
+        rows = self._write_rows_with_retry(
+            lambda: [
+                self._next_row(
+                    event_type=event_type,
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    action=action,
+                    batch_id=batch_id,
+                    timestamp=timestamp or self.as_of,
+                )
+            ]
         )
-        self.store.write_dataframe(M.AuditEvent.TABLE, pd.DataFrame([row]), mode="append")
-        return row
+        return rows[0]
 
     def append_many(self, events: list[dict[str, Any]]) -> pd.DataFrame:
         """Append and persist a batch of events in one write.
@@ -202,9 +255,9 @@ class AuditLedger:
         entity_id, action, payload (optional, reserved), batch_id (optional),
         timestamp (optional). Returns the persisted rows as a DataFrame.
         """
-        rows: list[dict[str, Any]] = []
-        for ev in events:
-            rows.append(
+
+        def build() -> list[dict[str, Any]]:
+            return [
                 self._next_row(
                     event_type=ev["event_type"],
                     entity_type=ev["entity_type"],
@@ -213,8 +266,8 @@ class AuditLedger:
                     batch_id=ev.get("batch_id", "BATCH"),
                     timestamp=ev.get("timestamp") or self.as_of,
                 )
-            )
-        if rows:
-            df = pd.DataFrame(rows)
-            self.store.write_dataframe(M.AuditEvent.TABLE, df, mode="append")
+                for ev in events
+            ]
+
+        rows = self._write_rows_with_retry(build) if events else []
         return pd.DataFrame(rows) if rows else pd.DataFrame()

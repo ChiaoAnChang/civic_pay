@@ -26,8 +26,8 @@
 ## What would have to happen before this could be taken seriously as a real backend
 
 1. Someone with a real Snowflake account runs `tests/test_snowflake_store.py` and the rest of the port-surface inventory in `docs/cloud-backend.md` against it, and fixes whatever it gets wrong (there will be something — this has never touched a live warehouse).
-2. The `previous_hash` `UNIQUE`-constraint fix (`docs/cloud-backend.md`'s concurrency section) ships against DuckDB first, independent of this work.
-3. The primary-key-enforcement gap above gets a real, tested design.
+2. ~~The `previous_hash` `UNIQUE`-constraint fix ships against DuckDB first, independent of this work.~~ **Done** — see `civicpay/storage/duckdb.py`'s `SCHEMA_DDL` and `civicpay/audit/ledger.py`'s retry logic. This does not close the gap below: Snowflake still won't enforce the equivalent constraint itself.
+3. The primary-key-enforcement gap above gets a real, tested design — DuckDB's fix does not port to Snowflake automatically, since Snowflake never enforces the constraint regardless of what the schema declares.
 4. `civicpay`'s ~40 `DuckDBStore(":memory:")` test call sites get parameterized over a backend fixture, and this file is what gets plugged into the "second backend" side of that fixture, per `docs/cloud-backend.md`'s stated acceptance criterion ("the existing suite passes against it," not "conforms to a Protocol").
 
-None of that has happened. This is a draft, not a milestone.
+Only #2 has happened, and it happened against DuckDB, not against this file. This is still a draft, not a milestone.
