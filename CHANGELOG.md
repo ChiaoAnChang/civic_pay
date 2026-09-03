@@ -7,7 +7,182 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **dbt analytical marts** (spec §16, previously deferred): a full `dbt/`
+  project (`dbt-duckdb` adapter, no extra infrastructure) with a thin staging
+  layer and three marts — `mart_recon_summary`, `mart_dq_summary`,
+  `mart_exception_aging` — that are faithful, verified SQL ports of
+  `civicpay.dashboard.extractors`, `civicpay.quality.scoring`, and
+  `civicpay.exceptions.workflow` respectively, including the `amount_at_risk`
+  None/NaN handling from OPEN_QUESTIONS §Q and the `reconciliation_rate` /
+  `ledger_coverage_rate` split from §K. New `civicpay dbt run` / `civicpay
+  dbt test` CLI commands; new optional `dbt` dependency group
+  (`pip install -e ".[dbt]"`). See [docs/dbt.md](docs/dbt.md).
+
+- **`docs/cloud-backend.md`** (OPEN_QUESTIONS §S): a decision record for
+  the previously-unscoped "cloud storage backend" NIW item — documentation
+  only, no code changed. Reframes the motivation from "scale" (weak — the
+  dataset is small and synthetic) to a latent audit-ledger concurrency race
+  currently masked by DuckDB's single-writer file lock, names and compares
+  MotherDuck/PostgreSQL/Snowflake/BigQuery as candidates (BigQuery is named
+  and rejected, not left neutral), and recommends Snowflake as an eventual
+  *optional second* backend — DuckDB stays the default — citing the
+  author's own professional Snowflake expertise as the deciding factor
+  alongside the architectural case.
+- **`previous_hash` `UNIQUE` constraint on `audit_event_log`**, following up
+  on the concurrency section of `docs/cloud-backend.md`: two writers reading
+  the same chain tip and both appending against it now fails cleanly with a
+  `duckdb.ConstraintException` instead of silently forking the chain.
+  `AuditLedger.append()`/`append_many()` catch that specific exception,
+  re-resolve the true tip, and retry — compare-and-swap expressed as a
+  schema constraint. Unreachable and unexercised under DuckDB's own
+  single-writer file lock today; ships now regardless, since it is the
+  precondition for any future backend that does permit concurrent writers.
+  4 new tests, including a persistent-conflict case that asserts a clear
+  `RuntimeError` rather than an infinite retry loop.
+- **`contrib/snowflake_backend/`**: an unverified `SnowflakeStore` reference
+  implementation, following up on the doc above at Joanne's request. Mirrors
+  `DuckDBStore`'s full eight-method surface; lives outside `civicpay/` so it
+  never ships, is never imported by shipped code, and adds no dependency to
+  the package. Writing it caught two real corrections to
+  `docs/cloud-backend.md` (the connector's default paramstyle is `pyformat`,
+  not qmark; `write_pandas()` needs `quote_identifiers=False` to match this
+  project's unquoted-lowercase `SCHEMA_DDL`), both fixed in the doc and
+  called out in the code's own comments. Never executed against a real
+  Snowflake account — see `contrib/snowflake_backend/README.md`'s status
+  section and known gaps (most notably, no compensation for Snowflake's
+  non-enforcement of `PRIMARY KEY`).
+
+### Changed
+- **`amount_at_risk` distinguishes "not applicable" from a resolved `$0.00`**
+  (OPEN_QUESTIONS §Q): a DQ exception on `accounts`/`customers` (no dollar
+  amount concept) now resolves `amount_at_risk` to `None`, not `0.0` — a
+  real, if trivial, resolved zero amount and "no amount concept applies at
+  all" were previously indistinguishable, and `amount_at_risk_factor(0.0)`
+  is the formula's *lowest* bucket (1.0 of a 1–4 range), so a high-severity
+  amount-less exception could never outrank even a medium-severity,
+  moderately-priced dollar-bearing one in the same sorted queue — severity
+  drove ranking *within* the amount-less cohort but was subordinate *across*
+  cohorts. `amount_at_risk_factor(None)` now returns a new
+  `NEUTRAL_AMOUNT_AT_RISK_FACTOR` (2.5, the range's midpoint) instead. A new
+  per-item `amount_basis: "amount" | "n/a"` field exposes which case
+  applies — surfaced as a `basis`/`amount_basis` column in the CLI table and
+  the dashboard. No fake dollar amount is invented; the basis is always
+  disclosed.
+
 ### Fixed
+- **`civicpay dbt run`/`test` crashed with `UnicodeDecodeError` on a
+  non-English Windows locale** (e.g. `cp950` Traditional Chinese): dbt-core
+  opens its own project files (`dbt_project.yml`, `models/*.sql`/`.yml`)
+  using the platform default text encoding rather than UTF-8, and this
+  project's own SQL comments/YAML descriptions contain non-ASCII characters
+  (`—`, `×`, `§`). Fixed by forcing `PYTHONUTF8=1` on the `dbt` subprocess
+  the CLI wrapper launches, rather than stripping non-ASCII characters from
+  the project's own source.
+- **NaN amount would have landed in the highest priority bucket, not the
+  neutral one — caught by code review before this session's `amount_at_risk`
+  change was committed.** `transactions.amount` / `payment_records.amount`
+  are nullable `DOUBLE` columns; a SQL `NULL` reads back as pandas `NaN`, and
+  `float(nan)` doesn't raise, so it slipped past the
+  `except (TypeError, ValueError)` guard as a "resolved" amount. Every bucket
+  comparison in `amount_at_risk_factor` is `False` against NaN, so it fell
+  through to the highest bucket (4.0) — the opposite of the neutral (2.5)
+  treatment the `amount_at_risk` change above was specifically introducing.
+  Latent (no current data path nulls an amount) but schema-permitted. Fixed
+  in both `queue.py` (`_amount_at_risk` checks `math.isnan`) and defensively
+  in `workflow.py`'s public `amount_at_risk_factor` (treats NaN the same as
+  `None`).
+- **`civicpay dashboard --db-path` / `civicpay enroll --db-path`**
+  (OPEN_QUESTIONS §L): both Streamlit entry points can now target a
+  non-default database. Since `streamlit run` launches a subprocess that
+  can't receive a Python argument directly, the path is forwarded via a new
+  `CIVICPAY_DB_PATH` env var, resolved by
+  `civicpay.storage.duckdb.resolve_db_path()`. Fails fast with a clean error
+  if the file doesn't exist, instead of silently rendering a blank dashboard
+  against a freshly-created empty database.
+- `docs/exceptions.md` and `docs/audit.md` (OPEN_QUESTIONS §O): standalone
+  technical docs for the exception workflow and audit-evidence layer,
+  matching the existing `docs/reconciliation.md`/`docs/data-quality.md`
+  style — covering the per-severity SLA design, the backlog-cohort pattern,
+  and both real audit bugs fixed this session (root cause and why each
+  matters for future changes to that module).
+- **Enrollment & validation module** (Ticket 13, v0.2 — `civicpay/enrollment/`):
+  point-of-capture error prevention complementing v0.1's post-hoc
+  reconciliation. `validators.validate()` runs per-field and cross-field
+  checks (declarative rules in `config/enrollment_rules.yml`) against a raw
+  candidate row; a passing record goes through a **dual-source agreement
+  gate** (`dual_source.py`) — one pure-Python proration path, one
+  independent SQL-via-DuckDB path — and is accepted (`accepted_enrollments`)
+  only when both agree within tolerance, otherwise routed to the existing
+  `exception_queue` (`source="enrollment_dual_source"`) for human review via
+  `civicpay exception list/resolve`. Every dual-source evaluation is
+  recorded in a new `enrollment_dual_source_results` table (agreeing or not,
+  mirroring `dq_results`'s always-record-everything convention). New CLI:
+  `civicpay enroll validate [--file records.csv]`, reading either an
+  external CSV or the seeded `pending_enrollments` pool by default; wired
+  into `civicpay run-all` as a new stage. `civicpay seed` now also seeds 200
+  enrollment candidates, a small fixed cohort deliberately violating
+  validation rules (bad date, out-of-range amount, duplicate entity id,
+  stray-space numeric, missing required) so the validators have known
+  defects to catch, plus a deterministic aged-mismatch backlog (mirroring
+  the DQ module's `BACKLOG_BATCH_ID` pattern) so SLA escalation is visible
+  in the exception queue without wall-clock timestamps. No REST API and no
+  new dependencies — see `docs/ai-implementation-backlog.md` for the full
+  scope decision and the architecture-fit review this ticket went through
+  before implementation (several of its original assumptions didn't match
+  how v0.1 actually turned out after the OPEN_QUESTIONS §E-J changes).
+  **Dashboard:** a new "Enrollment & Validation" section (candidate/outcome
+  counts, a dual-source-mismatch table joining both computed values, and an
+  in-page resolve action — Accept Path A / Accept Path B / Reject &
+  re-enter, each emitting an audit event via the existing `ExceptionManager.
+  resolve`) — the dashboard's first write action; every other view is
+  read-only. **Form:** `civicpay enroll` launches a 3-step Streamlit
+  constrained-input form (`civicpay/enrollment/forms.py`) — entity/program/
+  region, terms/amount, then a live-validated review step whose Submit
+  button is disabled until every blocking error clears; `civicpay enroll
+  validate` (with `--file`) remains the batch path. Verified end-to-end with
+  `streamlit.testing.v1.AppTest` (both the dashboard section and the form),
+  not just an HTTP+log smoke test.
+
+### Changed
+- **BREAKING (evidence package schema): `export_evidence` always exports
+  both a reconciliation section and an exception section** (OPEN_QUESTIONS
+  §H–J), replacing the recon-only design. `dq_results` turned out to carry no
+  batch identity and is replaced (not appended) per run, so a `--mode
+  recon|dq` flag — the original plan — was never implementable without a
+  schema change; `exception_queue` is the real batch-scoped, append-only DQ
+  story instead. Package keys added: `scope` (row counts per table queried +
+  a deterministic `event_timestamp_range` anchor alongside the wall-clock
+  `exported_at`), `exception_summary`, `exceptions`. `export_evidence(...,
+  full=False)` is the new default — `reconciliation_results` is empty unless
+  `--full` is passed (was always the complete rows, up to ~50k); exception
+  rows are always included in full (already bounded by
+  `max_exceptions_per_check`). New `UnknownBatchIdError`: exporting a
+  mistyped/nonexistent `batch_id` now fails loudly (was: a silent, empty,
+  `verified: true` package with nothing distinguishing "no activity" from
+  "wrong batch id"). CLI: `civicpay audit export` gained `--full`.
+
+### Fixed
+- **Dashboard reconciliation rate disagreed with the CLI's own number**
+  (OPEN_QUESTIONS §K): `civicpay.recon.matcher` computes
+  `reconciliation_rate` over payment-side rows only (0.89 on the default
+  seed, matching `docs/reconciliation.md` and the CLI's own `run-all`
+  output), but the dashboard's `reconciliation_summary()` recomputed the
+  same-named metric independently over *every* `reconciliation_results` row
+  — including the `unmatched_ledger` rows appended for ledger transactions
+  that were never going to match anything (~49,110 of them on the default
+  seed) — giving ~0.018 for the identical batch. Not a data-realism issue;
+  a "demo-friendly higher-match seed" (the original proposal) would have
+  hidden the discrepancy rather than fixed it. `reconciliation_summary()`
+  now computes the headline rate payment-side-only, matching the engine, and
+  reports ledger coverage as its own separate field
+  (`ledger_coverage_rate`/`unmatched_ledger`) rather than blending it in —
+  surfaced as a 5th "Ledger Coverage" metric card on the dashboard.
+- **`.gitignore` gained a blanket `*.duckdb` rule.** An ad hoc scratch
+  database created at the repo root during manual Ticket 13 verification
+  (not under the already-ignored `data/processed/`) was swept into a commit
+  before this rule existed. Removed from the working tree; the rule now
+  covers any stray DuckDB file regardless of location.
 - **Audit hash chain could fork when two batches shared a timestamp.**
   `AuditLedger._initialize_chain` resumed the chain via `ORDER BY timestamp
   DESC, event_id DESC LIMIT 1` — a heuristic that assumed batch-id strings
