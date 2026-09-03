@@ -1,9 +1,6 @@
 # Architecture
 
-This document summarizes the CivicPay Open Framework architecture. See the
-project charter (Part 2, Section 11) for the full specification, and
-[ai-implementation-backlog.md](ai-implementation-backlog.md) for forward-looking
-tickets not yet built.
+This document summarizes the CivicPay Open Framework architecture.
 
 ## Tech stack
 
@@ -59,5 +56,5 @@ implementation runs entirely on synthetic data.
 | CLI wiring + end-to-end (`run-all`) | Implemented | — |
 | PyPI packaging + install CI | Implemented | — |
 | dbt analytical marts | Implemented (v0.2) | [dbt.md](dbt.md) |
-| Enrollment & validation module (Ticket 13) | Implemented (v0.2) | [ai-implementation-backlog.md](ai-implementation-backlog.md) |
+| Enrollment & validation module (Ticket 13) | Implemented (v0.2) | — |
 | Cloud storage backend | Documented + unverified reference draft, not adopted | [cloud-backend.md](cloud-backend.md), [contrib/snowflake_backend/](../contrib/snowflake_backend/) |

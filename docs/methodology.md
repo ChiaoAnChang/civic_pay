@@ -1,7 +1,6 @@
 # Methodology
 
-The CivicPay Open Framework organizes financial-data-governance into four layers
-(see project charter Part 2, Section 6 for the full narrative):
+The CivicPay Open Framework organizes financial-data-governance into four layers:
 
 1. **Payment Reconciliation** — match inbound payment files against ledger
    entries; classify every record as matched, unmatched-payment,

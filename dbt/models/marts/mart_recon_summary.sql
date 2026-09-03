@@ -3,7 +3,7 @@
     (see docs/dbt.md). reconciliation_rate is computed over payment-side rows
     only (match_status != 'unmatched_ledger'); ledger_coverage_rate is the
     separate, full-ledger metric — kept apart because blending them produced
-    a real bug (OPEN_QUESTIONS §K): the same metric name meaning two very
+    a real bug: the same metric name meaning two very
     different numbers depending on which rows it was computed over.
 #}
 

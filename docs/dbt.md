@@ -36,7 +36,7 @@ Staging models are **passthrough, not cleaning** — column shapes are already e
 
 ### `mart_recon_summary`
 
-One row per reconciliation `batch_id`. Ports `civicpay.dashboard.extractors.reconciliation_summary` exactly, including the fix behind OPEN_QUESTIONS §K: `reconciliation_rate` is computed over **payment-side rows only** (`match_status != 'unmatched_ledger'`), and `ledger_coverage_rate` is a separate column over the full ledger — the same metric name meaning two different numbers, blended into one field, was a real bug in the dashboard before that fix; the mart inherits the corrected, split shape rather than the original bug.
+One row per reconciliation `batch_id`. Ports `civicpay.dashboard.extractors.reconciliation_summary` exactly, including a fix for a real dashboard bug: `reconciliation_rate` is computed over **payment-side rows only** (`match_status != 'unmatched_ledger'`), and `ledger_coverage_rate` is a separate column over the full ledger — the same metric name meaning two different numbers, blended into one field, was a real bug in the dashboard before that fix; the mart inherits the corrected, split shape rather than the original bug.
 
 ### `mart_dq_summary`
 
@@ -52,7 +52,7 @@ One row per `exception_queue` item, with the full priority formula computed in S
 priority_score = severity_weight × amount_at_risk_factor × age_factor
 ```
 
-This is the most involved port, because `civicpay.exceptions.queue._amount_at_risk` dynamically resolves each exception's dollar amount from a *different* table depending on `reference_id`'s `"{dataset}:{record_id}"` prefix. The mart reproduces this with three `LEFT JOIN`s (`transactions`, `payment_records`, `pending_enrollments`) gated by `ref_dataset`, matching `_AMOUNT_DATASETS` in `civicpay/exceptions/queue.py`. It also reproduces both edge cases from OPEN_QUESTIONS §Q: "not applicable" (`amount_at_risk IS NULL`) resolves to `amount_basis = 'n/a'` and the neutral `2.5` factor, and a NaN amount (`pending_enrollments.incentive_amount` is stored as raw `TEXT` and `try_cast`s to `NULL` on unparseable input, which is the SQL analogue of the Python NaN guard) is treated identically — never falling through to the highest bucket.
+This is the most involved port, because `civicpay.exceptions.queue._amount_at_risk` dynamically resolves each exception's dollar amount from a *different* table depending on `reference_id`'s `"{dataset}:{record_id}"` prefix. The mart reproduces this with three `LEFT JOIN`s (`transactions`, `payment_records`, `pending_enrollments`) gated by `ref_dataset`, matching `_AMOUNT_DATASETS` in `civicpay/exceptions/queue.py`. It also reproduces both edge cases in that logic: "not applicable" (`amount_at_risk IS NULL`) resolves to `amount_basis = 'n/a'` and the neutral `2.5` factor, and a NaN amount (`pending_enrollments.incentive_amount` is stored as raw `TEXT` and `try_cast`s to `NULL` on unparseable input, which is the SQL analogue of the Python NaN guard) is treated identically — never falling through to the highest bucket.
 
 `age_days` matches `civicpay.exceptions.workflow.age_days` exactly: `floor(total_seconds / 86400)`, via `date_diff('second', created_at, as_of_timestamp) / 86400.0`, not a calendar-date subtraction — those two disagree whenever `created_at` has a nonzero time-of-day component relative to midnight `as_of`.
 

@@ -53,8 +53,8 @@ DATASET_TABLES: dict[str, str] = {
 
 _SEVERITY_PRIORITY = {"high": "high", "medium": "medium", "low": "low"}
 
-# A small, deterministic "backlog" of already-aged exceptions (OPEN_QUESTIONS
-# §G), seeded once per fresh database. Real DQ exceptions are stamped
+# A small, deterministic "backlog" of already-aged exceptions,
+# seeded once per fresh database. Real DQ exceptions are stamped
 # ``created_at = as_of`` (the genuine detection time — this must agree with
 # the paired ``exception_open`` ledger event), so on a static demo DB every
 # exception otherwise shows age_days=0 and the per-severity SLA escalation
@@ -192,7 +192,7 @@ class QualityPipeline:
                     # a fresh exception above) so backlog items don't
                     # duplicate a reference_id already in this run's batch.
                     # The synthetic data is designed so usually only one
-                    # check actually fails (see OPEN_QUESTIONS §D), so pull as
+                    # check actually fails, so pull as
                     # many candidates as needed from it rather than capping
                     # at one-per-check.
                     pool = r.failing_ids[cap:] if len(r.failing_ids) > cap else r.failing_ids

@@ -46,7 +46,7 @@ reaching the ledger, complementing layers 1–4's post-hoc detection.
 2. **Data-Quality Monitoring** — completeness, accuracy, consistency, timeliness, anomaly checks; per-dataset quality score.
 3. **Exception Workflow** — priority-ranked queue, SLA aging, resolution with root-cause capture.
 4. **Audit-Evidence Layer** — append-only, hash-chained (tamper-evident) event log; exportable evidence packages.
-5. **Enrollment & Validation** (v0.2) — a point-of-capture complement to the four layers above: a constrained-input Streamlit form and CLI batch path validate candidate records, then a dual-source agreement gate (one pure-Python path, one independent SQL path) accepts a record only when both agree — otherwise it's routed into the same exception workflow for human review. See [docs/ai-implementation-backlog.md](docs/ai-implementation-backlog.md).
+5. **Enrollment & Validation** (v0.2) — a point-of-capture complement to the four layers above: a constrained-input Streamlit form and CLI batch path validate candidate records, then a dual-source agreement gate (one pure-Python path, one independent SQL path) accepts a record only when both agree — otherwise it's routed into the same exception workflow for human review.
 
 ## Tech stack
 

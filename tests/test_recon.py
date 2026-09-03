@@ -336,7 +336,7 @@ def test_cli_recon_run_writes_results(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Re-run idempotency pre-flight guard (OPEN_QUESTIONS §C)
+# Re-run idempotency pre-flight guard
 # --------------------------------------------------------------------------- #
 
 

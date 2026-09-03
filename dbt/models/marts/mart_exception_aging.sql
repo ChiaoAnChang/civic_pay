@@ -3,7 +3,7 @@
     severity_weight x amount_at_risk_factor x age_factor) and
     civicpay.exceptions.queue._amount_at_risk's dataset lookup. See
     docs/dbt.md and docs/exceptions.md for the Python original this mirrors,
-    including the None-vs-0.0 and NaN edge cases (OPEN_QUESTIONS §Q).
+    including the None-vs-0.0 and NaN edge cases.
 
     age_days matches civicpay.exceptions.workflow.age_days exactly: whole
     days from floor(total_seconds / 86400), not a calendar-date subtraction
