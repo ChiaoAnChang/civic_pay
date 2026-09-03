@@ -111,7 +111,7 @@ def test_new_ledger_resumes_from_true_tip_not_alphabetical_max(ledger_store):
     """A new ``AuditLedger``'s chain-resume must not depend on batch-id string
     ordering.
 
-    Regression for a fork found while implementing OPEN_QUESTIONS §G: two
+    Regression for a fork found while implementing the backlog cohort: two
     batches sharing a timestamp, seeded in real order "ZZZ" then "AAA"
     (alphabetically the wrong way round), used to make a *third*, freshly
     created ``AuditLedger`` resume from "ZZZ"'s stale tip instead of "AAA"'s
@@ -316,7 +316,7 @@ def test_cli_audit_export_unknown_batch_exits_nonzero(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# previous_hash UNIQUE constraint + retry (OPEN_QUESTIONS §S / docs/cloud-backend.md)
+# previous_hash UNIQUE constraint + retry (see docs/cloud-backend.md)
 # --------------------------------------------------------------------------- #
 
 
@@ -345,8 +345,8 @@ def test_append_retries_on_stale_previous_hash(ledger_store):
 
     Without the retry, this second append would either violate the new
     UNIQUE constraint and crash, or (pre-constraint) silently fork the chain
-    exactly like the OPEN_QUESTIONS §G bug. With the retry, it must
-    transparently re-resolve the true tip and produce a validly-chained
+    the same way an earlier backlog-cohort bug once did. With the retry, it
+    must transparently re-resolve the true tip and produce a validly-chained
     second event.
     """
     first_ledger = AuditLedger(store=ledger_store, actor="tester", as_of=AS_OF_DATETIME)

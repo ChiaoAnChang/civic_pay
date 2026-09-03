@@ -25,8 +25,7 @@ pre-commit install  # optional
 
 ## Ticket roadmap
 
-Work is organized into tickets defined in the project charter
-(`CivicPay_Open_Framework_Spec.md` §17). Current status:
+Work is organized into tickets. Current status:
 
 | Ticket | Scope | Status |
 | --- | --- | --- |
@@ -40,10 +39,8 @@ Work is organized into tickets defined in the project charter
 | 8 | Streamlit dashboard | Done |
 | 10 | CLI wiring & end-to-end | Done |
 | 11 | README & usage docs | Done |
-| 9 | dbt analytical marts | Deferred (v0.2) |
+| 9 | dbt analytical marts | Done |
 | 12 | First release | Pending |
-
-See `OPEN_QUESTIONS.md` for open design questions to resolve before release.
 
 ## Code style
 

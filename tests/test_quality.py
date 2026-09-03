@@ -596,7 +596,7 @@ def test_cli_dq_check_runs(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Re-run idempotency pre-flight guard (OPEN_QUESTIONS §C)
+# Re-run idempotency pre-flight guard
 # --------------------------------------------------------------------------- #
 
 

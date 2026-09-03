@@ -133,7 +133,7 @@ def test_generate_payment_file_smoke():
 
 def test_stale_cohort_is_genuinely_old():
     """A ~3.5% cohort of transactions is seeded with genuinely old created_at
-    dates (45/60/90 days), not a date-range boundary artifact (OPEN_QUESTIONS §D)."""
+    dates (45/60/90 days), not a date-range boundary artifact."""
     from civicpay.data.synthetic import AS_OF_DATETIME
 
     data = generate_all(seed=42, volumes={"customers": 500, "accounts": 200, "transactions": 2_000})
@@ -192,7 +192,7 @@ def test_payment_records_are_fresh():
 def test_stale_cohort_skipped_below_pool_size():
     """Small transaction volumes (<= the payment-pool size) inject no stale
     cohort, so genuinely-old postings never leak into the exact/fuzzy/
-    amount-mismatch buckets and distort the recon DoD (OPEN_QUESTIONS §D)."""
+    amount-mismatch buckets and distort the recon DoD."""
     from civicpay.data.synthetic import _PAYMENT_POOL_SIZE
 
     data = generate_all(

@@ -51,7 +51,7 @@ from civicpay.storage.duckdb import DuckDBStore
 console = Console()
 
 # A small, deterministic backlog of already-aged mismatches (mirrors the DQ
-# module's OPEN_QUESTIONS §G backlog cohort), seeded once per fresh database
+# module's own backlog cohort), seeded once per fresh database
 # so SLA escalation is visible without wall-clock timestamps. Amounts/terms
 # are chosen so the rounding-divergence dual-source gate deterministically
 # disagrees (not a coincidence of random generation).
@@ -265,7 +265,7 @@ class EnrollmentPipeline:
     def _seed_backlog_cohort(self, actor: str) -> int:
         """Seed a small, deterministic cohort of already-aged mismatches.
 
-        Mirrors the DQ module's backlog cohort (OPEN_QUESTIONS §G): real
+        Mirrors the DQ module's backlog cohort: real
         dual-source evaluations (not fabricated outcomes), backdated
         ``created_at`` on the exception only — the audit event's own
         timestamp stays ``as_of`` like every other event, since it is

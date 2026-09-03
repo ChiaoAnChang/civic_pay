@@ -221,8 +221,8 @@ def test_list_resolves_amount_at_risk_from_transaction(seeded_store):
 def test_list_amount_not_applicable_for_non_amount_dataset(seeded_store):
     """accounts/customers exceptions have no dollar-amount concept -- this is
     ``None`` ("not applicable"), not a resolved ``0.0``, and gets the neutral
-    midpoint factor rather than the lowest bucket (OPEN_QUESTIONS, exception
-    workflow: distinguishing "N/A" from "genuinely $0" so a high-severity
+    midpoint factor rather than the lowest bucket (distinguishing "N/A" from
+    "genuinely $0" so a high-severity
     amount-less exception isn't structurally capped below every
     dollar-bearing one)."""
     _write_exc(seeded_store, [_exc_row("E1", ref="accounts:ACC-000001", priority="high")])

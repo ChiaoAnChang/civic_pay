@@ -22,7 +22,7 @@ Priority is computed **on read**, not persisted, so it never goes stale — but 
 SLA_DAYS_BY_SEVERITY = {"high": 3, "medium": 7, "low": 14}
 ```
 
-`age_factor`'s SLA threshold resolves per-severity by default (`resolve_sla_days(priority, sla_days=None)`) — a high-severity item starts escalating after 3 days, a low-severity one after 14. This replaced a single flat 7-day SLA for every exception regardless of severity (OPEN_QUESTIONS §F): severity already scales *how urgent* an escalated item looks (3×/2×/1×), but a single SLA meant every exception escalated at the same day count regardless of severity — the one place this module visibly departed from the real triage practice (P1/P2/P3-style response windows) it's meant to demonstrate.
+`age_factor`'s SLA threshold resolves per-severity by default (`resolve_sla_days(priority, sla_days=None)`) — a high-severity item starts escalating after 3 days, a low-severity one after 14. This replaced a single flat 7-day SLA for every exception regardless of severity: severity already scales *how urgent* an escalated item looks (3×/2×/1×), but a single SLA meant every exception escalated at the same day count regardless of severity — the one place this module visibly departed from the real triage practice (P1/P2/P3-style response windows) it's meant to demonstrate.
 
 `--sla-days` (CLI) / `sla_days=` (`ExceptionManager.list`, `dashboard.exception_queue`) still exists as an explicit override — pass a value to apply the same window to every item instead. The resolved window is exposed per-item as a `sla_days` field (CLI table, dashboard) so which window applied to a given item is visible, not implicit.
 
@@ -36,7 +36,7 @@ _AMOUNT_DATASETS: dict[str, tuple[str, str, str]] = {
 }
 ```
 
-`reference_id` encodes `"{dataset}:{record_id}"`; `_amount_at_risk` looks up `(table, id_field, amount_field)` and coerces to `float()` (some amount columns — `pending_enrollments.incentive_amount` — are intentionally text, not numeric, since that table holds unvalidated intake data; see `docs/ai-implementation-backlog.md` for why). Adding a new exception-producing dataset means adding one entry here.
+`reference_id` encodes `"{dataset}:{record_id}"`; `_amount_at_risk` looks up `(table, id_field, amount_field)` and coerces to `float()` (some amount columns — `pending_enrollments.incentive_amount` — are intentionally text, not numeric, since that table holds unvalidated intake data straight off the enrollment form/CSV, before any type coercion happens). Adding a new exception-producing dataset means adding one entry here.
 
 **"Not applicable" is `None`, not `0.0`.** A DQ exception on `accounts`/`customers` (no dataset entry above) resolves to `amount_at_risk = None`, exposed alongside a per-item `amount_basis: "amount" | "n/a"` field (CLI table, dashboard column) so it's visible which case a given row is in. This used to be `0.0` — indistinguishable from a real record that resolved to a genuine, if trivial, zero amount — and `amount_at_risk_factor(0.0)` is the formula's **lowest** bucket (1.0). Since the bucket only goes up to 4.0 for dollar-bearing exceptions, a high-severity amount-less exception was structurally capped below even a medium-severity, moderately-priced dollar-bearing one in the same sorted queue — severity dominated *within* the amount-less cohort but was subordinate *across* cohorts. `amount_at_risk_factor(None)` now returns `NEUTRAL_AMOUNT_AT_RISK_FACTOR` (2.5, the midpoint of the 1–4 range) instead, so severity and age are what actually drive an amount-less exception's standing against the rest of the queue, without inventing a fake dollar figure.
 
@@ -44,7 +44,7 @@ _AMOUNT_DATASETS: dict[str, tuple[str, str, str]] = {
 
 ## The demo backlog cohort (why exceptions don't all show age_days=0)
 
-Both `QualityPipeline` (DQ) and `EnrollmentPipeline` (v0.2 enrollment) seed a small, deterministic cohort of **already-aged** exceptions once per fresh database (`BACKLOG_BATCH_ID` in `civicpay/quality/pipeline.py`, `_BACKLOG_ENTITY_PREFIX` in `civicpay/enrollment/pipeline.py`) — real failing records (or, for enrollment, records deliberately constructed to genuinely diverge), with `created_at` backdated by a fixed number of days, so SLA escalation is visible in a plain `run-all` or the dashboard without waiting on wall-clock time (OPEN_QUESTIONS §G).
+Both `QualityPipeline` (DQ) and `EnrollmentPipeline` (v0.2 enrollment) seed a small, deterministic cohort of **already-aged** exceptions once per fresh database (`BACKLOG_BATCH_ID` in `civicpay/quality/pipeline.py`, `_BACKLOG_ENTITY_PREFIX` in `civicpay/enrollment/pipeline.py`) — real failing records (or, for enrollment, records deliberately constructed to genuinely diverge), with `created_at` backdated by a fixed number of days, so SLA escalation is visible in a plain `run-all` or the dashboard without waiting on wall-clock time.
 
 **Why not just use wall-clock `now()` for `created_at` instead:** that would make every run's exception ages non-reproducible, which is worse for a portfolio/reference artifact than a small seeded backlog. The genuine detection path (a *fresh* DQ or enrollment run) always stamps `created_at = as_of` — real detections happen "now," in the deterministic simulated present. Only the seeded backlog is deliberately backdated, and only its `created_at` field — the paired audit event's own `timestamp` still uses `as_of` (see [audit.md](audit.md) for why: keeping ledger timestamps consistent avoids a chain-resume hazard).
 
@@ -71,5 +71,5 @@ civicpay exception resolve --id EXC-DQ-001-000001 --root-cause "stale upstream f
 ## Design notes & limitations
 
 - **No schema extension.** Priority is computed on read so it never goes stale; if a dashboard/mart later needs a persisted score, a view/mart can be added without touching this module.
-- **Per-check-type SLA config** (rather than per-severity) remains deferred — a real enhancement, not needed for the demo (OPEN_QUESTIONS §F).
+- **Per-check-type SLA config** (rather than per-severity) remains deferred — a real enhancement, not needed for the demo.
 - **Enrollment mismatches are the second real producer** of `exception_queue` rows — `ReconciliationPipeline` never writes to it directly (it only emits audit events for its own exception classifications); `QualityPipeline` and `EnrollmentPipeline` do.

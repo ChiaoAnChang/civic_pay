@@ -117,7 +117,7 @@ class AuditLedger:
         string: e.g. ``"EVT-R1-..."`` sorts after ``"EVT-D1-..."`` regardless
         of which was actually appended more recently. A *new* ``AuditLedger``
         instance created after several same-timestamp batches already coexist
-        (as the OPEN_QUESTIONS §G backlog cohort does, appending its own
+        (as the deterministic backlog cohort does, appending its own
         events right after the main DQ batch's) could then resume from a
         stale, non-tip event — and if that event already has a different
         child, the new append forks the chain (observed in practice: a

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-09-03
+
 ### Added
 - **dbt analytical marts** (spec §16, previously deferred): a full `dbt/`
   project (`dbt-duckdb` adapter, no extra infrastructure) with a thin staging
@@ -14,21 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mart_exception_aging` — that are faithful, verified SQL ports of
   `civicpay.dashboard.extractors`, `civicpay.quality.scoring`, and
   `civicpay.exceptions.workflow` respectively, including the `amount_at_risk`
-  None/NaN handling from OPEN_QUESTIONS §Q and the `reconciliation_rate` /
-  `ledger_coverage_rate` split from §K. New `civicpay dbt run` / `civicpay
-  dbt test` CLI commands; new optional `dbt` dependency group
-  (`pip install -e ".[dbt]"`). See [docs/dbt.md](docs/dbt.md).
+  None/NaN handling and the `reconciliation_rate` / `ledger_coverage_rate`
+  split described below. New `civicpay dbt run` / `civicpay dbt test` CLI
+  commands; new optional `dbt` dependency group (`pip install -e ".[dbt]"`).
+  See [docs/dbt.md](docs/dbt.md).
 
-- **`docs/cloud-backend.md`** (OPEN_QUESTIONS §S): a decision record for
-  the previously-unscoped "cloud storage backend" NIW item — documentation
-  only, no code changed. Reframes the motivation from "scale" (weak — the
-  dataset is small and synthetic) to a latent audit-ledger concurrency race
-  currently masked by DuckDB's single-writer file lock, names and compares
+- **`docs/cloud-backend.md`**: a decision record for a previously-unscoped
+  "cloud storage backend" item — documentation only, no code changed.
+  Reframes the motivation from "scale" (weak — the dataset is small and
+  synthetic) to a latent audit-ledger concurrency race currently masked by
+  DuckDB's single-writer file lock, names and compares
   MotherDuck/PostgreSQL/Snowflake/BigQuery as candidates (BigQuery is named
   and rejected, not left neutral), and recommends Snowflake as an eventual
-  *optional second* backend — DuckDB stays the default — citing the
-  author's own professional Snowflake expertise as the deciding factor
-  alongside the architectural case.
+  *optional second* backend — DuckDB stays the default.
 - **`previous_hash` `UNIQUE` constraint on `audit_event_log`**, following up
   on the concurrency section of `docs/cloud-backend.md`: two writers reading
   the same chain tip and both appending against it now fails cleanly with a
@@ -41,21 +41,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   4 new tests, including a persistent-conflict case that asserts a clear
   `RuntimeError` rather than an infinite retry loop.
 - **`contrib/snowflake_backend/`**: an unverified `SnowflakeStore` reference
-  implementation, following up on the doc above at Joanne's request. Mirrors
-  `DuckDBStore`'s full eight-method surface; lives outside `civicpay/` so it
-  never ships, is never imported by shipped code, and adds no dependency to
-  the package. Writing it caught two real corrections to
-  `docs/cloud-backend.md` (the connector's default paramstyle is `pyformat`,
-  not qmark; `write_pandas()` needs `quote_identifiers=False` to match this
-  project's unquoted-lowercase `SCHEMA_DDL`), both fixed in the doc and
-  called out in the code's own comments. Never executed against a real
-  Snowflake account — see `contrib/snowflake_backend/README.md`'s status
-  section and known gaps (most notably, no compensation for Snowflake's
-  non-enforcement of `PRIMARY KEY`).
+  implementation, extending the design doc above into real, reviewable
+  code. Mirrors `DuckDBStore`'s full eight-method surface; lives outside
+  `civicpay/` so it never ships, is never imported by shipped code, and
+  adds no dependency to the package. Writing it caught two real corrections
+  to `docs/cloud-backend.md` (the connector's default paramstyle is
+  `pyformat`, not qmark; `write_pandas()` needs `quote_identifiers=False`
+  to match this project's unquoted-lowercase `SCHEMA_DDL`), both fixed in
+  the doc and called out in the code's own comments. Never executed against
+  a real Snowflake account — see `contrib/snowflake_backend/README.md`'s
+  status section and known gaps (most notably, no compensation for
+  Snowflake's non-enforcement of `PRIMARY KEY`).
 
 ### Changed
-- **`amount_at_risk` distinguishes "not applicable" from a resolved `$0.00`**
-  (OPEN_QUESTIONS §Q): a DQ exception on `accounts`/`customers` (no dollar
+- **`amount_at_risk` distinguishes "not applicable" from a resolved `$0.00`**:
+  a DQ exception on `accounts`/`customers` (no dollar
   amount concept) now resolves `amount_at_risk` to `None`, not `0.0` — a
   real, if trivial, resolved zero amount and "no amount concept applies at
   all" were previously indistinguishable, and `amount_at_risk_factor(0.0)`
@@ -80,8 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the CLI wrapper launches, rather than stripping non-ASCII characters from
   the project's own source.
 - **NaN amount would have landed in the highest priority bucket, not the
-  neutral one — caught by code review before this session's `amount_at_risk`
-  change was committed.** `transactions.amount` / `payment_records.amount`
+  neutral one — caught by code review before the `amount_at_risk` change
+  above was finalized.** `transactions.amount` / `payment_records.amount`
   are nullable `DOUBLE` columns; a SQL `NULL` reads back as pandas `NaN`, and
   `float(nan)` doesn't raise, so it slipped past the
   `except (TypeError, ValueError)` guard as a "resolved" amount. Every bucket
@@ -92,19 +92,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in both `queue.py` (`_amount_at_risk` checks `math.isnan`) and defensively
   in `workflow.py`'s public `amount_at_risk_factor` (treats NaN the same as
   `None`).
-- **`civicpay dashboard --db-path` / `civicpay enroll --db-path`**
-  (OPEN_QUESTIONS §L): both Streamlit entry points can now target a
-  non-default database. Since `streamlit run` launches a subprocess that
-  can't receive a Python argument directly, the path is forwarded via a new
-  `CIVICPAY_DB_PATH` env var, resolved by
-  `civicpay.storage.duckdb.resolve_db_path()`. Fails fast with a clean error
-  if the file doesn't exist, instead of silently rendering a blank dashboard
-  against a freshly-created empty database.
-- `docs/exceptions.md` and `docs/audit.md` (OPEN_QUESTIONS §O): standalone
+- **`civicpay dashboard --db-path` / `civicpay enroll --db-path`**: both
+  Streamlit entry points can now target a non-default database. Since
+  `streamlit run` launches a subprocess that can't receive a Python
+  argument directly, the path is forwarded via a new `CIVICPAY_DB_PATH` env
+  var, resolved by `civicpay.storage.duckdb.resolve_db_path()`. Fails fast
+  with a clean error if the file doesn't exist, instead of silently
+  rendering a blank dashboard against a freshly-created empty database.
+- `docs/exceptions.md` and `docs/audit.md`: standalone
   technical docs for the exception workflow and audit-evidence layer,
   matching the existing `docs/reconciliation.md`/`docs/data-quality.md`
   style — covering the per-severity SLA design, the backlog-cohort pattern,
-  and both real audit bugs fixed this session (root cause and why each
+  and the two real audit bugs described below (root cause and why each
   matters for future changes to that module).
 - **Enrollment & validation module** (Ticket 13, v0.2 — `civicpay/enrollment/`):
   point-of-capture error prevention complementing v0.1's post-hoc
@@ -127,10 +126,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defects to catch, plus a deterministic aged-mismatch backlog (mirroring
   the DQ module's `BACKLOG_BATCH_ID` pattern) so SLA escalation is visible
   in the exception queue without wall-clock timestamps. No REST API and no
-  new dependencies — see `docs/ai-implementation-backlog.md` for the full
-  scope decision and the architecture-fit review this ticket went through
-  before implementation (several of its original assumptions didn't match
-  how v0.1 actually turned out after the OPEN_QUESTIONS §E-J changes).
+  new dependencies — an architecture-fit review before implementation found
+  several of the ticket's original design assumptions didn't match how the
+  core pipeline actually turned out (SLA handling, evidence export, and
+  exception routing had all changed since the original design).
   **Dashboard:** a new "Enrollment & Validation" section (candidate/outcome
   counts, a dual-source-mismatch table joining both computed values, and an
   in-page resolve action — Accept Path A / Accept Path B / Reject &
@@ -146,8 +145,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **BREAKING (evidence package schema): `export_evidence` always exports
-  both a reconciliation section and an exception section** (OPEN_QUESTIONS
-  §H–J), replacing the recon-only design. `dq_results` turned out to carry no
+  both a reconciliation section and an exception section**, replacing the
+  recon-only design. `dq_results` turned out to carry no
   batch identity and is replaced (not appended) per run, so a `--mode
   recon|dq` flag — the original plan — was never implementable without a
   schema change; `exception_queue` is the real batch-scoped, append-only DQ
@@ -163,8 +162,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "wrong batch id"). CLI: `civicpay audit export` gained `--full`.
 
 ### Fixed
-- **Dashboard reconciliation rate disagreed with the CLI's own number**
-  (OPEN_QUESTIONS §K): `civicpay.recon.matcher` computes
+- **Dashboard reconciliation rate disagreed with the CLI's own number**:
+  `civicpay.recon.matcher` computes
   `reconciliation_rate` over payment-side rows only (0.89 on the default
   seed, matching `docs/reconciliation.md` and the CLI's own `run-all`
   output), but the dashboard's `reconciliation_summary()` recomputed the
@@ -192,7 +191,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `as_of` timestamp, so ties are common. A new `AuditLedger` instance
   initializing after two prior batches already coexist could resume from a
   stale, non-tip event and fork the chain. Found while implementing the
-  OPEN_QUESTIONS §G backlog cohort (which introduces a second `AuditLedger`
+  backlog-cohort feature (which introduces a second `AuditLedger`
   instance mid-run): reproduced as `civicpay run-all` failing with
   `audit-verify BROKEN` / `chain_fork` on a fresh database. Fixed at the
   root (`civicpay/audit/ledger.py`): `_initialize_chain` now finds the
@@ -214,16 +213,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every raw-SQL parameter bind (new `DuckDBStore.execute()`, now used by
   `ExceptionManager.resolve/assign` and `AuditLedger._initialize_chain`
   instead of reaching into `store.conn.execute()` directly). Found while
-  setting up a fresh local dev environment (Windows, UTC-5) to verify
-  OPEN_QUESTIONS §E — 10 of 11 test failures in that environment traced back
-  to this one root cause.
+  setting up a fresh local dev environment (Windows, UTC-5) to verify the
+  anomaly-weight change below — 10 of 11 test failures in that environment
+  traced back to this one root cause.
 
 ### Added
-- **Deterministic exception backlog cohort** (OPEN_QUESTIONS §G): on a
+- **Deterministic exception backlog cohort**: on a
   full-config `dq check`/`run-all` against a fresh database, `QualityPipeline`
   now also seeds a small, fixed cohort of already-aged exceptions (real
   failing record ids, `created_at` backdated 2/5/12/21/45 days,
-  batch id `DQ-000-PRIOR`) so SLA escalation (§F) is visible in the CLI table
+  batch id `DQ-000-PRIOR`) so SLA escalation is visible in the CLI table
   and dashboard out of the box, instead of every exception showing
   `age_days = 0` on a static demo DB. Genuine DQ detections still use
   `created_at = as_of` unchanged (this must agree with the paired
@@ -233,7 +232,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `exception list` / the dashboard also gained a per-item `sla_days` column.
 
 ### Changed
-- **Per-severity SLA windows for exception aging** (OPEN_QUESTIONS §F):
+- **Per-severity SLA windows for exception aging**:
   `SLA_DAYS_BY_SEVERITY = {"high": 3, "medium": 7, "low": 14}` replaces the
   old flat 7-day default for every exception regardless of severity — a
   high-severity item now starts escalating sooner than a low-severity one,
@@ -243,8 +242,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the resolved window is now also exposed per-item as a new `sla_days`
   field/column (CLI table, dashboard). Per-check-type SLA config remains
   deferred to v0.2.
-- **Anomaly checks excluded from the dataset quality score** (OPEN_QUESTIONS
-  §E): `type_weights.anomaly` is now `0.0` (was `0.5`). A z-score/IQR anomaly
+- **Anomaly checks excluded from the dataset quality score**:
+  `type_weights.anomaly` is now `0.0` (was `0.5`). A z-score/IQR anomaly
   check flags a small tail of records by construction, so its own score sits
   near 100 regardless of data quality elsewhere — including it in the average
   inflated the dataset score rather than protecting against outliers
@@ -257,13 +256,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same type-weighted formula as the CLI plus an `anomaly_rate` column.
 
 ### Added
-- **Re-run idempotency pre-flight guard** (OPEN_QUESTIONS §C): both pipelines
+- **Re-run idempotency pre-flight guard**: both pipelines
   (`QualityPipeline`, `ReconciliationPipeline`) now check whether a `batch_id`
   is already present in the append-only audit log before any writes, and fail
   fast with `BatchIdAlreadyUsedError` (a clear, actionable message) instead of
   a raw DuckDB primary-key constraint error mid-run. `civicpay run-all` checks
   both derived batch ids (`{run_id}-RECON`, `{run_id}-DQ`) up front.
-- **Genuinely-stale transaction cohort** (OPEN_QUESTIONS §D): synthetic
+- **Genuinely-stale transaction cohort**: synthetic
   transactions now include a ~3.5% cohort with `created_at` dates 45/60/90 days
   before the as-of date, so the timeliness DQ check catches meaningful staleness
   instead of an Aug-1 boundary artifact (records that were only 31 days old).
@@ -271,10 +270,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Trusted Publishing (OIDC) for PyPI: releases are published via GitHub Actions
   identity, no shared API token secret required.
 - Version is now derived from git tags via `hatch-vcs` (`dynamic = ["version"]`).
-
-## [0.1.0] — 2026-09-01
-
-### Added
 - **Payment Reconciliation** (Ticket 1–3): deterministic synthetic-data generation
   (Faker, seed=42), DuckDB storage layer, audit-ledger hash-chained append-only
   log, fuzzy + exact matching with RapidFuzz, configurable pipeline.
@@ -304,7 +299,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Genesis validation tightened for full-chain verification.
 
 ### Tests
-- 153 tests passing; ruff clean (check + format).
+- 248 tests passing, 1 skipped; ruff clean (check + format).
 
-[Unreleased]: https://github.com/joannechang39/civicpay-open-framework/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/joannechang39/civicpay-open-framework/releases/tag/v0.1.0
+[Unreleased]: https://github.com/ChiaoAnChang/civic_pay/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ChiaoAnChang/civic_pay/releases/tag/v0.1.0
