@@ -122,7 +122,7 @@ civicpay enroll validate --file records.csv
 ```
 
 Rules (program caps, term ranges, regions, dual-source tolerance) live in
-[`config/enrollment_rules.yml`](config/enrollment_rules.yml). Accepted records
+[`civicpay/config/enrollment_rules.yml`](civicpay/config/enrollment_rules.yml). Accepted records
 land in `accepted_enrollments`; dual-source disagreements route to the same
 exception queue as recon/DQ (`civicpay exception list/resolve`, or the
 dashboard's Enrollment & Validation section, which can also resolve a
@@ -130,7 +130,7 @@ mismatch by accepting either computed value or rejecting it for re-entry).
 
 ### Data quality configuration
 
-DQ checks are configured in [`config/dq_checks.yml`](config/dq_checks.yml) — per-dataset check definitions (type, rule, params), type weights, and the exception-routing cap. See [docs/data-quality.md](docs/data-quality.md) for the full check catalogue.
+DQ checks are configured in [`civicpay/config/dq_checks.yml`](civicpay/config/dq_checks.yml) — per-dataset check definitions (type, rule, params), type weights, and the exception-routing cap. See [docs/data-quality.md](docs/data-quality.md) for the full check catalogue.
 
 ### Determinism & re-runs
 

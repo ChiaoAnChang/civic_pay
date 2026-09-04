@@ -23,7 +23,9 @@ import yaml
 
 from civicpay.enrollment.models import EnrollmentRecord
 
-DEFAULT_RULES_PATH = Path("config/enrollment_rules.yml")
+# See civicpay.recon.pipeline.DEFAULT_CONFIG_PATH's comment: bundled with
+# the package so a pip-installed copy has a working default.
+DEFAULT_RULES_PATH = Path(__file__).resolve().parent.parent / "config" / "enrollment_rules.yml"
 
 REQUIRED_FIELDS = (
     "entity_id",

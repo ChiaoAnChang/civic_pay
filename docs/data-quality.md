@@ -18,7 +18,7 @@ Anomaly checks are weighted **0.0** — excluded from the score entirely, not ju
 
 ## Check catalogue
 
-Nine typed checks, dispatched by `(check_type, rule)` from [`config/dq_checks.yml`](../config/dq_checks.yml):
+Nine typed checks, dispatched by `(check_type, rule)` from [`civicpay/config/dq_checks.yml`](../civicpay/config/dq_checks.yml):
 
 | Type | Rule | What it detects |
 | --- | --- | --- |

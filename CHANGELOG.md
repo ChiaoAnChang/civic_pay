@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`civicpay run-all` (and `dq check`, `recon run`, `enroll validate`) crashed
+  when installed from PyPI**, because `config/*.yml` was never packaged: the
+  wheel only ever included the `civicpay/` package directory, so a plain
+  `pip install civicpay` produced an installation with no config files at
+  all anywhere on disk. `recon.yml`'s absence went unnoticed because
+  `ReconConfig`'s dataclass defaults are sensible standalone values, but
+  `dq_checks.yml`'s absence silently produced a config with zero datasets
+  configured (`load_config` returns an empty config rather than erroring on
+  a missing file) — `dq check` then ran zero checks and crashed trying to
+  write a zero-row, zero-column result DataFrame. Caught by actually running
+  `civicpay run-all` against a fresh `pip install` in an empty directory
+  (unrelated to the source checkout) after publishing — the install CI only
+  ever checked `--help`, never a real run, so this shipped in 0.1.0 without
+  being caught. Fixed by moving `config/*.yml` into `civicpay/config/`
+  (bundled with the package, not the repo-root `config/` a git checkout also
+  has) and resolving every default config path relative to the installed
+  module's own location instead of a bare relative string assumed to be
+  resolvable from the caller's current working directory. `--config`/`--rules`
+  overrides are unaffected.
+
 ## [0.1.0] — 2026-09-03
 
 ### Added

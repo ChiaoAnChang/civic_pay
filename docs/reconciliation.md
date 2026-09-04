@@ -202,7 +202,7 @@ directly from stored rows to assert the chain property that Ticket 7 will rely o
 
 ## 5. Configuration
 
-`config/recon.yml`:
+`civicpay/config/recon.yml`:
 
 ```yaml
 # Max |payment.amount - ledger.amount| for an amount match (exact and fuzzy).
@@ -254,7 +254,7 @@ civicpay recon run
 | `--date` | `2026-09-01` | As-of date (YYYY-MM-DD) for stale detection |
 | `--batch-id` | `BATCH-001` | Reconciliation batch id (controls `recon_id` / `event_id`) |
 | `--db-path` | `data/processed/civicpay.duckdb` | DuckDB database path |
-| `--config` | `config/recon.yml` | Reconciliation config YAML |
+| `--config` | `civicpay/config/recon.yml` | Reconciliation config YAML |
 
 ### Example output
 
@@ -326,7 +326,7 @@ Or use the convenience entry point:
 ```python
 from civicpay.recon.pipeline import run_recon
 
-summary = run_recon(db_path="…", config_path="config/recon.yml", batch_id="BATCH-001")
+summary = run_recon(db_path="…", config_path="civicpay/config/recon.yml", batch_id="BATCH-001")
 ```
 
 ---

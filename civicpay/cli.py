@@ -16,8 +16,11 @@ from rich.table import Table
 from civicpay.audit.evidence import BatchIdAlreadyUsedError, verify_chain
 from civicpay.data import models as M
 from civicpay.data.synthetic import AS_OF_DATE, generate_all
+from civicpay.enrollment.validators import DEFAULT_RULES_PATH
 from civicpay.exceptions.queue import ExceptionManager
+from civicpay.quality.pipeline import DEFAULT_CONFIG_PATH as DEFAULT_DQ_CONFIG_PATH
 from civicpay.quality.pipeline import run_dq
+from civicpay.recon.pipeline import DEFAULT_CONFIG_PATH as DEFAULT_RECON_CONFIG_PATH
 from civicpay.recon.pipeline import run_recon
 from civicpay.storage.duckdb import DB_PATH_ENV_VAR, DEFAULT_DB_PATH, DuckDBStore
 
@@ -113,7 +116,7 @@ def recon_run(
     date: str = typer.Option(str(AS_OF_DATE), help="As-of date (YYYY-MM-DD) for stale detection."),
     batch_id: str = typer.Option("BATCH-001", help="Reconciliation batch id."),
     db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
-    config: str = typer.Option("config/recon.yml", help="Reconciliation config YAML."),
+    config: str = typer.Option(str(DEFAULT_RECON_CONFIG_PATH), help="Reconciliation config YAML."),
 ) -> None:
     """Run payment reconciliation against the ledger in DuckDB.
 
@@ -165,7 +168,7 @@ def dq_check(
     ),
     batch_id: str = typer.Option("DQ-001", help="Data-quality batch id."),
     db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
-    config: str = typer.Option("config/dq_checks.yml", help="DQ config YAML."),
+    config: str = typer.Option(str(DEFAULT_DQ_CONFIG_PATH), help="DQ config YAML."),
     date: str = typer.Option(str(AS_OF_DATE), help="As-of date (YYYY-MM-DD) for staleness."),
 ) -> None:
     """Run data-quality checks across datasets in DuckDB.
@@ -319,7 +322,7 @@ def enroll_validate(
     file: str = typer.Option(
         None, help="CSV of candidate enrollments to validate (default: seeded pending_enrollments)."
     ),
-    rules: str = typer.Option("config/enrollment_rules.yml", help="Enrollment rules YAML."),
+    rules: str = typer.Option(str(DEFAULT_RULES_PATH), help="Enrollment rules YAML."),
     db_path: str = typer.Option(str(DEFAULT_DB_PATH), help="DuckDB database path."),
     date: str = typer.Option(str(AS_OF_DATE), help="As-of date (YYYY-MM-DD)."),
 ) -> None:

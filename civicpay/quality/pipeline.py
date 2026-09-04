@@ -40,7 +40,13 @@ from civicpay.storage.duckdb import DEFAULT_DB_PATH, DuckDBStore
 
 console = Console()
 
-DEFAULT_CONFIG_PATH = Path("config/dq_checks.yml")
+# See civicpay.recon.pipeline.DEFAULT_CONFIG_PATH's comment: bundled with
+# the package so a pip-installed copy has a working default. This one
+# matters more than recon's — load_config() below falls back to an *empty*
+# DQConfig (zero datasets) when the file is missing, not sensible defaults,
+# so a stale bare-relative path here silently produced zero DQ checks
+# rather than erroring, until run() crashed trying to write zero result rows.
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "dq_checks.yml"
 DEFAULT_BATCH_ID = "DQ-001"
 
 # Dataset name -> DuckDB table.

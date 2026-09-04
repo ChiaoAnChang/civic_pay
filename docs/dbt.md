@@ -42,7 +42,7 @@ One row per reconciliation `batch_id`. Ports `civicpay.dashboard.extractors.reco
 
 One row per `dataset_name`. Ports `civicpay.quality.scoring.dataset_quality_score` (check-type-weighted average, computed over whatever `dq_results` currently holds — that table is replaced wholesale each `civicpay dq check` run, never appended, so an unfiltered `group by dataset_name` is already "latest run only," matching the Python behavior with no batch filter needed) and `anomaly_rate` (excluded from the weighted score, reported on its own).
 
-Per-check-type weights (`config/dq_checks.yml`'s `type_weights`) are duplicated as dbt vars in `dbt_project.yml` (`dq_type_weight_completeness`, etc.) since dbt has no built-in way to read an arbitrary YAML config file at compile time. **If `config/dq_checks.yml`'s `type_weights` ever change, these vars must be updated by hand** — the one place this mart can silently drift from its Python source without a test catching it (accuracy of the *value*, not the *shape*, isn't something `not_null`/`accepted_values` can check).
+Per-check-type weights (`civicpay/config/dq_checks.yml`'s `type_weights`) are duplicated as dbt vars in `dbt_project.yml` (`dq_type_weight_completeness`, etc.) since dbt has no built-in way to read an arbitrary YAML config file at compile time. **If `civicpay/config/dq_checks.yml`'s `type_weights` ever change, these vars must be updated by hand** — the one place this mart can silently drift from its Python source without a test catching it (accuracy of the *value*, not the *shape*, isn't something `not_null`/`accepted_values` can check).
 
 ### `mart_exception_aging`
 

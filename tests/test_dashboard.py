@@ -122,7 +122,7 @@ def test_dq_dataset_scores_aggregates(seeded_store):
 def test_dq_dataset_scores_reports_anomaly_rate_separately(seeded_store):
     agg = dq_dataset_scores(seeded_store)
     row = agg[agg["dataset_name"] == "transactions"].iloc[0]
-    # transactions has an anomaly check (config/dq_checks.yml); the default
+    # transactions has an anomaly check (civicpay/config/dq_checks.yml); the default
     # type_weights.anomaly: 0.0 excludes it from quality_score, and its rate
     # is surfaced separately instead of folded into a flat mean.
     assert row["anomaly_rate"] is not None

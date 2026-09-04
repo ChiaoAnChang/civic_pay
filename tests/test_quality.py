@@ -126,7 +126,7 @@ def test_dataset_score_empty_is_100():
 
 
 def test_dataset_score_default_excludes_anomaly():
-    # Default config (config/dq_checks.yml) weights anomaly 0.0; a low anomaly
+    # Default config (civicpay/config/dq_checks.yml) weights anomaly 0.0; a low anomaly
     # score should not affect the dataset score at all when that weight is applied.
     scores = [("completeness", 100.0), ("completeness", 80.0), ("anomaly", 10.0)]
     assert dataset_quality_score(scores, {"anomaly": 0.0}) == pytest.approx(90.0)

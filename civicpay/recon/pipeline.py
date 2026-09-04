@@ -24,7 +24,11 @@ from civicpay.storage.duckdb import DEFAULT_DB_PATH, DuckDBStore
 from rich.console import Console
 from rich.table import Table
 
-DEFAULT_CONFIG_PATH = Path("config/recon.yml")
+# Bundled with the package (civicpay/config/, not the repo-root config/ a
+# git checkout also has) so `pip install civicpay` ships a working default
+# regardless of the caller's current working directory — a bare relative
+# "config/recon.yml" resolved nothing once installed outside a repo clone.
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "recon.yml"
 
 console = Console()
 
