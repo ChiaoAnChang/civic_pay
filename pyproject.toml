@@ -65,5 +65,5 @@ select = ["E", "F", "I", "W", "UP", "B"]
 ignore = ["E501", "B008"]  # E501 handled by formatter; B008 is the Typer Option-in-default idiom
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "examples/public_payments/tests"]
 addopts = "-ra"
