@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`examples/public_payments/`: Phase 3 concept demo** applying the existing
+  reconciliation / data-quality / exception-workflow / audit-evidence
+  methodology to a synthetic unemployment-insurance-style benefit program —
+  the class of problem GAO's improper-payments reporting tracks at federal
+  scale (GAO-26-108694: $186B estimated improper payments in FY2025). All
+  data is fabricated (`generate_synthetic_data.py`, regenerable, never
+  committed). Investigated first whether adapting the engine to a new schema
+  is config-only or needs new code: `civicpay.quality.checks` turned out to
+  be genuinely generic (config-only, see `config/dq_checks.yml`), but
+  `civicpay.recon.matcher` is hard-wired to reference-id ledger matching with
+  no equivalent for this scenario, so three new detection rules (duplicate
+  payments, out-of-window payments, amount mismatches) were added in
+  `detection.py` as pure functions, following the same architecture as the
+  existing matcher. `tests/test_detection_rate.py` measures and asserts the
+  actual catch rate against the generator's own ground truth rather than
+  asserting a number by hand: 480/480 injected errors caught, zero false
+  positives (including 40 legitimate-adjustment decoy rows built specifically
+  to prove the engine doesn't just flag every amount deviation). Root
+  `README.md` gets a Roadmap section pointing to this example.
+
 ### Fixed
 - **`civicpay run-all` (and `dq check`, `recon run`, `enroll validate`) crashed
   when installed from PyPI**, because `config/*.yml` was never packaged: the

@@ -1,0 +1,31 @@
+# Data-quality check configuration for the public_payments demo.
+#
+# Reuses civicpay.quality.checks.run_check as-is (spec §5 investigation
+# finding: these checks are generic — dataset name, table, and field are all
+# config, no code change needed). See detection.py for the error categories
+# that DO need new code (cross-row/cross-table checks this dispatch table has
+# no equivalent for).
+
+type_weights:
+  completeness: 1.0
+  accuracy: 1.0
+  anomaly: 0.0 # excluded from the score; reported separately as anomaly_rate.
+
+datasets:
+  claimant_roster:
+    id_field: claimant_id
+    checks:
+      - {type: completeness, name: "No null claimant ids", field: claimant_id, severity: high}
+      - {type: completeness, name: "No null approved benefit amounts", field: approved_weekly_benefit, severity: high}
+      - {type: accuracy, name: "Approved benefit non-negative", rule: range, field: approved_weekly_benefit, min: 0, severity: high}
+      - {type: accuracy, name: "Valid program code", rule: enum, field: program_code, values: [SUI-STD, SUI-EXT], severity: medium}
+      - {type: accuracy, name: "Valid status", rule: enum, field: status, values: [active, exhausted, denied], severity: medium}
+
+  benefit_payments:
+    id_field: payment_id
+    checks:
+      - {type: completeness, name: "No null claimant ids", field: claimant_id, severity: high}
+      - {type: accuracy, name: "Amount non-negative", rule: range, field: amount, min: 0, severity: high}
+      - {type: accuracy, name: "Valid status", rule: enum, field: status, values: [issued], severity: low}
+      - {type: accuracy, name: "Claimant exists on roster", rule: referential, field: claimant_id, reference_dataset: claimant_roster, reference_field: claimant_id, severity: high}
+      - {type: anomaly, name: "Amount z-score outliers", rule: zscore, field: amount, threshold: 3.0, severity: low, route_failures: false}

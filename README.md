@@ -138,6 +138,10 @@ Data generation and all pipelines are deterministic given a fixed `--seed`. Each
 
 See [docs/reconciliation.md](docs/reconciliation.md) for the reconciliation module's full technical documentation (algorithm, data model, configuration, API, test results, and operational behavior). See [docs/data-quality.md](docs/data-quality.md) for the DQ module, [docs/exceptions.md](docs/exceptions.md) for the exception workflow (priority, SLA aging, the demo backlog cohort), [docs/audit.md](docs/audit.md) for the audit-evidence layer (hash chaining, evidence export, and two real bugs found and fixed in it), [docs/architecture.md](docs/architecture.md) for the module status table, and [docs/methodology.md](docs/methodology.md) for the overall design.
 
+## Roadmap
+
+- **Phase 3 concept demo — in progress:** [`examples/public_payments/`](examples/public_payments/) applies this same reconciliation / data-quality / exception-workflow / audit-evidence methodology to a synthetic public-benefit-payments scenario — the class of problem GAO's improper-payments reporting tracks at federal scale. See that example's README for the required scope disclaimer: proof-of-concept on synthetic data only, not an engagement with, access to, or endorsement by any government agency.
+
 ## Clean-room provenance
 
 This project is developed clean-room: from public regulatory requirements, published technical standards, and original design — never from any employer's proprietary systems, code, or data. See [PROVENANCE.md](PROVENANCE.md).
